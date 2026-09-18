@@ -1,0 +1,52 @@
+# ゲストセッション
+
+- 種別: 機能設計書
+- 対象 UC: UC-003(ゲストとして対戦を始める)
+
+## 何を作るか
+
+登録せずにニックネームだけで対戦を始められるゲストプレイヤーの識別機構。認証不要ルートとして実装し、Cognitoには一切依存しない(docs/design/FEASIBILITY.md PoC-2で検証済みの「ルート単位オプトイン」方式)。
+
+## 入出力と振る舞い
+
+| 操作 | 画面に起きること |
+|---|---|
+| トップで「ゲストで遊ぶ」→ニックネーム入力→「この名前で始める」 | ①`POST /api/guest/session`で`guest_id` Cookie発行(初回のみ) ②`POST /api/ws-tickets`にニックネームを渡しチケット取得 ③`/ws/matchmake?ticket=...`へ接続してマッチメイキング画面(UC-004)へ遷移 |
+| ニックネーム未入力のまま送信 | 送信不可・エラー表示(UI_SKETCH.html Home画面参照) |
+| 不適切な語を含むニックネーム | `POST /api/ws-tickets`が拒否(UC-003 E2の判定はニックネーム送信時=チケット発行時に行う)、登録拒否・再入力を促す |
+
+UI_SKETCH.html「Home」画面のゲスト入力モーダルに対応。ニックネームのNGワード判定はDESIGN.md「横断規約」の`POST /api/ws-tickets`で行う(本機能はゲストの識別Cookie発行のみを担当する)。
+
+## API
+
+DESIGN.md「API一覧」参照。
+
+### POST /api/guest/session
+- 認証: 不要
+- リクエスト: なし
+- 挙動: 既存の`guest_id` Cookieがあればそれを再利用し`issued: false`、無ければ新規発行して`issued: true`。**Cookieの有無に関わらず、再訪問のたびにニックネームは`POST /api/ws-tickets`で毎回指定し直す**(UC-003 BR-002: ニックネームは引き継がれない)
+- レスポンス(200): `{ "guestId": string, "issued": boolean }`
+- Cookie: `guest_id=<ulid>; HttpOnly; SameSite=Lax; Max-Age=86400`(DESIGN.md横断規約: 有効期限24時間。`Secure`属性は本番のみ付与し、開発環境では環境変数`COOKIE_SECURE=false`で無効化する)
+- エラー: なし(副作用のみのエンドポイント)
+
+## 実装の配置
+
+| 処理 | 層 | 実装先ファイル |
+| --- | --- | --- |
+| ゲストIDの発行・Cookie設定(認証ミドルウェアなし) | adapter | `src/server/modules/guest/adapter/guestSession.ts` |
+| NGワード判定(account.mdの新規登録、`POST /api/ws-tickets`からも共通利用するため`shared`配下に置く) | domain | `src/server/modules/shared/domain/nicknameFilter.ts` |
+| ゲスト入力モーダル | front | `src/front/pages/Home.tsx` |
+
+## エッジケースの決定
+
+- **空・最小データ**: ニックネーム空文字・空白のみは`POST /api/ws-tickets`側で400(DESIGN.md参照)
+- **上限・境界値**: `nicknameFilter`はニックネーム1〜20文字(全角/半角問わず文字数カウント)を許容範囲とする。超過は400 `NICKNAME_TOO_LONG`
+- **エラー時に見えるもの**: NGワード判定に該当した場合、具体的にどの語が引っかかったかは返さず「ニックネームを変更してください」とだけ表示する(判定ロジックの推測を防ぐ)
+- **並行操作・二重実行**: 同一ブラウザで複数タブから同時に`POST /api/guest/session`を呼んでも、Cookieが未設定の間は複数回発行されうる(最後に設定されたCookieが有効になる)。ゲスト機能はセッション永続性が要件でないため許容する
+- **再表示時の整合**: ゲストCookieを保持したままログイン(UC-002)した場合、以後は登録プレイヤーとして扱い`guest_id`は無視する(削除はしない、単に参照しなくなる)。対戦継続中の`playerRef`の扱いはDESIGN.md横断規約「ゲストの識別」参照
+
+## テスト方針
+
+- 単体: `nicknameFilter`(NGワード判定、文字数境界値)
+- 結合: `POST /api/guest/session`が認証ミドルウェアを経由しないこと(既存の認証必須ルートと共存すること)、既存Cookieがある場合に再発行しないこと
+- E2E(golden path): トップ→「ゲストで遊ぶ」→ニックネーム入力→マッチメイキング画面への遷移

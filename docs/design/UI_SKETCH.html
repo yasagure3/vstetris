@@ -1,0 +1,1222 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<title>VS TETRIS — UI SKETCH</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        colors: {
+          bg: '#060a12',
+          panel: '#0e1626',
+          panel2: '#0b111d',
+          border: '#1e2a3f',
+        },
+        fontFamily: {
+          display: ['Orbitron', 'sans-serif'],
+          head: ['Rajdhani', 'sans-serif'],
+          body: ['Inter', 'Noto Sans JP', 'sans-serif'],
+          mono: ['"JetBrains Mono"', 'monospace'],
+        },
+      },
+    },
+  };
+</script>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@19",
+    "react/jsx-runtime": "https://esm.sh/react@19/jsx-runtime",
+    "react/jsx-dev-runtime": "https://esm.sh/react@19/jsx-dev-runtime",
+    "react-dom/client": "https://esm.sh/react-dom@19/client"
+  }
+}
+</script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  :root {
+    --cyan: #2dd6ff;
+    --magenta: #ff2ecb;
+    --lime: #c3ff3d;
+    --amber: #ffb84d;
+    --line: #1e2a3f;
+  }
+  html, body { background: #05070c; }
+  body { font-family: 'Inter', 'Noto Sans JP', sans-serif; }
+  .font-display { font-family: 'Orbitron', sans-serif; }
+  .font-head { font-family: 'Rajdhani', sans-serif; letter-spacing: .02em; }
+  .font-ui-mono { font-family: '"JetBrains Mono"', 'JetBrains Mono', monospace; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 4px; }
+  .neon-text { text-shadow: 0 0 8px currentColor, 0 0 20px currentColor; }
+  .neon-border { box-shadow: 0 0 0 1px rgba(45,214,255,.4), 0 0 16px rgba(45,214,255,.25); }
+  .neon-border-magenta { box-shadow: 0 0 0 1px rgba(255,46,203,.4), 0 0 16px rgba(255,46,203,.25); }
+
+  /* 盤面: フラットなネオン角丸ではなく「ブロックの厚み」を感じさせるベベル */
+  .grid-cell {
+    width: 22px; height: 22px; border-radius: 2px;
+    box-shadow: inset 1.5px 1.5px 0 rgba(255,255,255,.35), inset -1.5px -1.5px 0 rgba(0,0,0,.35);
+  }
+  .bg-grid {
+    background-image: linear-gradient(rgba(148,163,184,.06) 1px, transparent 1px),
+                       linear-gradient(90deg, rgba(148,163,184,.06) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  /* シグネチャー: パネル四隅の「ブロックスタッド」。汎用的な角丸カードと差別化する装飾 */
+  .block-corners { position: relative; }
+  .block-corners::before, .block-corners::after {
+    content: ""; position: absolute; width: 7px; height: 7px;
+    background: var(--cyan); box-shadow: 0 0 6px var(--cyan);
+  }
+  .block-corners::before { top: -3.5px; left: -3.5px; }
+  .block-corners::after { bottom: -3.5px; right: -3.5px; background: var(--magenta); box-shadow: 0 0 6px var(--magenta); }
+
+  /* シグネチャー: 一本線の代わりに使う「ブロック状」の区切り罫線 */
+  .brick-rule { position: relative; }
+  .brick-rule::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+    background-image: linear-gradient(90deg, var(--line) 0 6px, transparent 6px 10px);
+    background-size: 10px 2px; background-repeat: repeat-x;
+  }
+
+  @keyframes toast-in { from { opacity:0; transform: translateY(-8px);} to {opacity:1; transform: translateY(0);} }
+  .toast-in { animation: toast-in .18s ease-out; }
+  .tab-btn { transition: color .15s, border-color .15s; }
+
+  /* Home hero: 積み上がって着地するテトリミノの演出(シグネチャー要素) */
+  @keyframes tet-fall {
+    0% { transform: translateY(-160px) rotate(-6deg); opacity: 0; }
+    65% { transform: translateY(4px) rotate(1deg); opacity: 1; }
+    80% { transform: translateY(-3px) rotate(0deg); }
+    100% { transform: translateY(0) rotate(0deg); }
+  }
+  .tet-fall { animation: tet-fall .7s cubic-bezier(.2,.8,.2,1) both; }
+  @media (prefers-reduced-motion: reduce) {
+    .tet-fall { animation: none; }
+  }
+</style>
+</head>
+<body class="bg-bg text-slate-200">
+<div id="root"></div>
+
+<script type="text/babel" data-type="module" data-presets="react">
+import React, { useState, useEffect, useRef, createContext, useContext } from "react";
+import { createRoot } from "react-dom/client";
+
+/* =========================================================================
+   共通データ: 画面一覧・US 対応
+   ========================================================================= */
+const SCREENS = [
+  { key: "home", name: "トップ / ランディング", type: "補助系", us: "US-002, US-023", desc: "ゲストプレイ開始・ログイン導線・チュートリアル導線" },
+  { key: "login", name: "ログイン", type: "認証系", us: "US-001", desc: "登録プレイヤーのログイン" },
+  { key: "signup", name: "新規登録", type: "認証系", us: "US-001, US-024", desc: "アカウント作成・規約/プライバシー同意" },
+  { key: "passwordReset", name: "パスワード再設定", type: "認証系", us: "US-021", desc: "本人確認の上でパスワードを再設定" },
+  { key: "matchmaking", name: "マッチメイキング待機", type: "メイン機能", us: "US-003", desc: "ランダム対戦相手を探す待機画面" },
+  { key: "room", name: "ルーム作成/参加", type: "メイン機能", us: "US-004", desc: "ルームID発行・共有・参加待機" },
+  { key: "battle", name: "対戦画面", type: "メイン機能", us: "US-005〜US-010, US-015, US-025", desc: "コアゲームプレイ。フルスクリーン、ナビ非表示。色覚サポート切替・通報導線・再接続デモを含む" },
+  { key: "result", name: "対戦結果", type: "結果表示", us: "US-009, US-012, US-015", desc: "勝敗・スコア・消去ライン数・攻撃量のサマリー。通報導線も設置" },
+  { key: "spectateList", name: "観戦一覧", type: "メイン機能", us: "US-011", desc: "進行中の対戦一覧から観戦先を選ぶ(0件時の空状態デモ切替あり)" },
+  { key: "spectate", name: "観戦画面", type: "メイン機能", us: "US-011, US-015, US-016", desc: "第三者視点で両者の盤面をリアルタイム表示、リアクション(連投制限あり)、通報導線" },
+  { key: "history", name: "対戦履歴", type: "結果表示", us: "US-013", desc: "登録プレイヤーの過去対戦一覧。ゲスト/未ログインは履歴なし案内を表示(ログイン強制なし)" },
+  { key: "replay", name: "リプレイ再生", type: "結果表示", us: "US-017", desc: "過去対戦の操作ログ再生" },
+  { key: "account", name: "アカウント設定", type: "設定系", us: "US-021, US-025", desc: "パスワード再設定・退会導線・キー割当設定(アクセシビリティ)" },
+  { key: "tutorial", name: "チュートリアル / ヘルプ", type: "補助系", us: "US-023", desc: "操作方法・対戦ルール(おじゃまライン等)の説明" },
+  { key: "adminReports", name: "通報一覧(運営者)", type: "管理系", us: "US-015, US-022", desc: "記録された通報の確認。運営者権限が必要(非管理者は権限なし画面へ)" },
+  { key: "notFound", name: "404", type: "補助系", us: "AppShell", desc: "存在しないURL。ホームへ戻る導線必須" },
+  { key: "forbidden", name: "権限なし", type: "補助系", us: "AppShell", desc: "権限のない操作を試みた場合の専用画面。例: 非管理者が通報一覧へアクセス" },
+  { key: "networkError", name: "ネットワークエラー", type: "補助系", us: "AppShell", desc: "通信断・API失敗時の専用画面。再読み込み導線必須" },
+];
+
+function screenLabel(key) {
+  const found = SCREENS.find(s => s.key === key);
+  return found ? found.name : key;
+}
+
+const TYPE_COLOR = {
+  "認証系": "bg-cyan-500/15 text-cyan-300 border-cyan-500/30",
+  "メイン機能": "bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30",
+  "結果表示": "bg-lime-500/15 text-lime-300 border-lime-500/30",
+  "設定系": "bg-amber-500/15 text-amber-300 border-amber-500/30",
+  "管理系": "bg-rose-500/15 text-rose-300 border-rose-500/30",
+  "補助系": "bg-slate-500/15 text-slate-300 border-slate-500/30",
+};
+
+/* =========================================================================
+   タブ: 概要
+   ========================================================================= */
+function OverviewTab() {
+  return (
+    <div className="max-w-5xl mx-auto p-6 space-y-6">
+      <div>
+        <h2 className="font-head text-2xl font-semibold text-cyan-300 neon-text mb-1">画面一覧</h2>
+        <p className="text-sm text-slate-400">対戦テトリス(webapp / Cloudflare Workers, fullstack-worker-template)の全画面。USER_STORIES.md の各USに対応。</p>
+      </div>
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full text-sm">
+          <thead className="bg-panel2 text-slate-400">
+            <tr>
+              <th className="text-left px-4 py-2 font-medium">画面</th>
+              <th className="text-left px-4 py-2 font-medium">種類</th>
+              <th className="text-left px-4 py-2 font-medium">対応US</th>
+              <th className="text-left px-4 py-2 font-medium">説明</th>
+            </tr>
+          </thead>
+          <tbody>
+            {SCREENS.map(s => (
+              <tr key={s.key} className="border-t border-border hover:bg-panel/60">
+                <td className="px-4 py-2 font-medium text-slate-100">{s.name}</td>
+                <td className="px-4 py-2">
+                  <span className={"inline-block px-2 py-0.5 rounded border text-xs " + TYPE_COLOR[s.type]}>{s.type}</span>
+                </td>
+                <td className="px-4 py-2 text-slate-400">{s.us}</td>
+                <td className="px-4 py-2 text-slate-400">{s.desc}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="rounded-lg border border-border bg-panel p-4">
+        <h3 className="font-head text-cyan-300 text-base font-semibold mb-2">アプリシェル方針(フェーズ4.5)</h3>
+        <ul className="text-sm text-slate-400 space-y-1 list-disc list-inside">
+          <li>グローバルレイアウト: <b className="text-slate-200">トップナビのみ</b>。対戦画面(battle)のみナビを隠しフルスクリーン化</li>
+          <li>認証ガード: 未認証で認証必須ページ(アカウント設定・通報一覧)に来た場合 <b className="text-slate-200">/login?next=元URL</b> にリダイレクトし、ログイン成功後に元ページへ復帰。ただし対戦履歴はゲスト/未ログインでも開け、画面内で「履歴は保存されない」旨を案内する(US-013、ログイン強制はしない)</li>
+          <li>権限ガード: 通報一覧(運営者)はログイン済みでも<b className="text-slate-200">運営者権限がなければ権限なし画面</b>を表示する</li>
+          <li>404 / 権限なし / ネットワークエラー: それぞれ専用画面。<b className="text-slate-200">「ホームへ戻る」「再読み込み」を必ず設置</b>し、"/" への自動リダイレクトはしない</li>
+          <li>グローバルトースト: 成功/エラー/情報の3種、<b className="text-slate-200">右上表示・自動消滅(3〜5秒)・最大3件まで重ね表示</b></li>
+          <li>ErrorBoundary: ルート単位に1つ配置し、React描画エラー時はホワイトアウトさせず「問題が発生しました / 再読み込み」を表示(プロトタイプタブ右下の「⚠ ErrorBoundaryデモ」で確認可)</li>
+          <li>共通loading: 一覧系(観戦一覧・履歴・通報一覧)は Skeleton、ボタン起点の短時間処理(ログイン送信・マッチング開始等)は Spinner</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================================
+   タブ: ユーザーフロー図 (HTML/SVG/CSS, Mermaid不使用)
+   ========================================================================= */
+function FlowBox({ label, sub, accent = "cyan" }) {
+  const ring = accent === "cyan" ? "border-cyan-500/50 text-cyan-200" : accent === "magenta" ? "border-fuchsia-500/50 text-fuchsia-200" : "border-lime-500/50 text-lime-200";
+  return (
+    <div className={"shrink-0 rounded-lg border bg-panel px-3 py-2 text-center " + ring} style={{minWidth: 120}}>
+      <div className="text-xs font-semibold">{label}</div>
+      {sub && <div className="text-[10px] text-slate-500 mt-0.5">{sub}</div>}
+    </div>
+  );
+}
+function Arrow({ label }) {
+  return (
+    <div className="flex flex-col items-center shrink-0 px-1">
+      {label && <div className="text-[10px] text-slate-500 mb-0.5 whitespace-nowrap">{label}</div>}
+      <svg width="36" height="16" viewBox="0 0 36 16">
+        <line x1="0" y1="8" x2="28" y2="8" stroke="#475569" strokeWidth="2" />
+        <polygon points="28,3 36,8 28,13" fill="#475569" />
+      </svg>
+    </div>
+  );
+}
+function FlowRow({ title, note, children }) {
+  return (
+    <div className="rounded-lg border border-border p-4 bg-panel2">
+      <div className="text-sm font-semibold text-slate-100 mb-1">{title}</div>
+      {note && <div className="text-xs text-slate-500 mb-3">{note}</div>}
+      <div className="flex items-center overflow-x-auto pb-1">{children}</div>
+    </div>
+  );
+}
+
+function FlowsTab() {
+  return (
+    <div className="max-w-5xl mx-auto p-6 space-y-4">
+      <h2 className="font-head text-2xl font-semibold text-cyan-300 neon-text mb-1">ユーザーフロー図</h2>
+      <p className="text-sm text-slate-400 mb-4">主要なユーザーフローをHTML/SVG/CSSで表現(Mermaid不使用)。</p>
+
+      <FlowRow title="① 新規登録プレイヤーのランダム対戦" note="US-001, US-024, US-023, US-003, US-005〜010, US-009, US-012">
+        <FlowBox label="トップ" />
+        <Arrow />
+        <FlowBox label="新規登録" sub="規約同意 必須" />
+        <Arrow />
+        <FlowBox label="チュートリアル" sub="初回のみ" accent="lime" />
+        <Arrow />
+        <FlowBox label="マッチング待機" accent="magenta" />
+        <Arrow label="成立" />
+        <FlowBox label="対戦画面" accent="magenta" />
+        <Arrow label="決着" />
+        <FlowBox label="結果画面" accent="lime" />
+      </FlowRow>
+
+      <FlowRow title="② ゲストプレイヤーの対戦" note="US-002, US-003, US-005〜010, US-009">
+        <FlowBox label="トップ" />
+        <Arrow label="ニックネーム入力" />
+        <FlowBox label="マッチング待機" accent="magenta" />
+        <Arrow label="成立" />
+        <FlowBox label="対戦画面" accent="magenta" />
+        <Arrow label="決着" />
+        <FlowBox label="結果画面" accent="lime" sub="履歴は保存されない案内" />
+      </FlowRow>
+
+      <FlowRow title="③ ルームでのフレンド対戦" note="US-004">
+        <FlowBox label="トップ(要ログイン)" />
+        <Arrow />
+        <FlowBox label="ルーム作成" />
+        <Arrow label="ID共有" />
+        <FlowBox label="相手が参加" sub="満室で締切" />
+        <Arrow label="2人揃う" />
+        <FlowBox label="対戦画面" accent="magenta" />
+        <Arrow label="決着" />
+        <FlowBox label="結果画面" accent="lime" />
+      </FlowRow>
+
+      <FlowRow title="④ 観戦" note="US-011, US-016">
+        <FlowBox label="トップ" />
+        <Arrow />
+        <FlowBox label="観戦一覧" sub="0件なら空状態表示" />
+        <Arrow label="1つ選択" />
+        <FlowBox label="観戦画面" accent="magenta" />
+        <Arrow label="対戦終了" />
+        <FlowBox label="結果表示" accent="lime" />
+        <Arrow />
+        <FlowBox label="観戦一覧に戻る" />
+      </FlowRow>
+
+      <FlowRow title="⑤ 通報 → 運営対応" note="US-015, US-022 (異なるユーザーロールをまたぐフロー)">
+        <FlowBox label="対戦/結果/観戦画面" sub="プレイヤー・観戦者どちらも通報可" />
+        <Arrow label="「通報する」" />
+        <FlowBox label="通報モーダル" sub="理由選択+送信" />
+        <Arrow label="記録" />
+        <FlowBox label="(運営者) 通報一覧" accent="lime" sub="運営者権限が必要" />
+      </FlowRow>
+
+      <FlowRow title="⑥ アカウント管理" note="US-021">
+        <FlowBox label="トップ(要ログイン)" />
+        <Arrow />
+        <FlowBox label="アカウント設定" />
+        <Arrow label="分岐" />
+        <FlowBox label="パスワード再設定" />
+        <Arrow label="or" />
+        <FlowBox label="退会確認" sub="取消線=破壊的操作" accent="magenta" />
+      </FlowRow>
+
+      <FlowRow title="⑦ 認証ガード / エラー系 (AppShell横断)" note="未ログインアクセス・権限不足・存在しないURL・通信断のケース">
+        <FlowBox label="アカウント設定 等 要ログインURLへ直接アクセス" />
+        <Arrow label="未ログイン" />
+        <FlowBox label="ログイン(?next=元URL)" />
+        <Arrow label="成功" />
+        <FlowBox label="元のページへ復帰" accent="lime" />
+      </FlowRow>
+      <FlowRow title="⑦-2 権限不足">
+        <FlowBox label="通報一覧(運営者)へアクセス" />
+        <Arrow label="ログイン済だが運営者権限なし" />
+        <FlowBox label="権限なし画面" sub="ホームへ戻る" accent="magenta" />
+      </FlowRow>
+      <FlowRow title="⑦-3 存在しないURL">
+        <FlowBox label="存在しないURL" />
+        <Arrow />
+        <FlowBox label="404画面" sub="ホームへ戻る / 再読込" accent="magenta" />
+      </FlowRow>
+    </div>
+  );
+}
+
+/* =========================================================================
+   タブ: 画面要素・インタラクション一覧
+   ========================================================================= */
+const INTERACTIONS = [
+  { screen: "トップ", trigger: "「ゲストで遊ぶ」クリック", action: "ニックネーム入力モーダル表示", result: "送信後マッチメイキング待機へ遷移" },
+  { screen: "新規登録", trigger: "規約未同意で送信", action: "バリデーション", result: "同意チェック必須のエラー表示、送信不可" },
+  { screen: "マッチメイキング待機", trigger: "「対戦相手を探す」クリック", action: "マッチング処理(モック: 3秒後成立)", result: "スピナー表示 → 対戦画面へ自動遷移" },
+  { screen: "マッチメイキング待機", trigger: "長時間未成立", action: "タイムアウト検知", result: "「待機継続」/「キャンセル」の選択UIを表示" },
+  { screen: "ルーム作成/参加", trigger: "「ルームを作成」クリック", action: "ルームID発行", result: "IDとコピー用ボタンを表示、相手待ちのスピナー" },
+  { screen: "対戦画面", trigger: "キー操作(移動・回転・ハードドロップ・ホールド)", action: "盤面状態更新", result: "自盤面に反映、一定操作で相手盤面にも影響" },
+  { screen: "対戦画面", trigger: "2ライン以上同時消去", action: "攻撃計算", result: "相手盤面へのおじゃまライン予告表示" },
+  { screen: "対戦画面", trigger: "「通報する」クリック", action: "通報モーダル表示", result: "理由選択して送信 → トースト「通報を送信しました」" },
+  { screen: "対戦画面", trigger: "「色覚サポート」トグル", action: "盤面表示モード切替", result: "ブロックに色に加えて記号を重ねて表示(US-025)" },
+  { screen: "対戦画面(デモ)", trigger: "「デモ: 相手が切断」クリック", action: "通信切断状態に遷移", result: "再接続待ちバナー表示 → 一定時間後デモで復帰 or 不戦勝(US-010)" },
+  { screen: "対戦画面(デモ)", trigger: "「デモ: 決着させる」クリック", action: "決着状態に遷移", result: "結果画面へ遷移(本番はゲームオーバー判定で自動遷移)" },
+  { screen: "結果画面", trigger: "「もう一度対戦」クリック", action: "再マッチング開始", result: "マッチメイキング待機画面へ遷移" },
+  { screen: "結果画面", trigger: "「通報する」クリック", action: "通報モーダル表示", result: "理由選択して送信 → トースト「通報を送信しました」" },
+  { screen: "観戦一覧", trigger: "対戦カードクリック", action: "観戦セッション参加", result: "観戦画面へ遷移しリアルタイム表示開始" },
+  { screen: "観戦一覧(デモ)", trigger: "「デモ: 対戦0件にする」クリック", action: "一覧を空データに切替", result: "「観戦できる対戦はありません」の空状態を表示(US-011)" },
+  { screen: "観戦画面", trigger: "リアクションボタンクリック", action: "リアクション送信", result: "画面上にリアクションが一時表示。短時間に一定回数を超えると送信不可になりトースト表示(US-016)" },
+  { screen: "観戦画面", trigger: "「通報する」クリック", action: "通報モーダル表示", result: "理由選択して送信 → トースト「通報を送信しました」" },
+  { screen: "対戦履歴", trigger: "履歴行クリック", action: "リプレイ取得", result: "リプレイ再生画面へ遷移" },
+  { screen: "対戦履歴", trigger: "ゲスト/未ログインで履歴ページへ遷移", action: "認証状態チェック", result: "ログイン強制はせず「履歴は保存されません」の案内+ログイン/登録導線を表示(US-013)" },
+  { screen: "アカウント設定", trigger: "「退会する」クリック", action: "確認モーダル表示(破壊的操作)", result: "再確認後に実行、取り消し不可の警告を表示" },
+  { screen: "通報一覧(運営者)(デモ)", trigger: "「デモ: 通報0件にする」クリック", action: "一覧を空データに切替", result: "「通報はありません」の空状態を表示(US-022)" },
+  { screen: "共通(AppShell)", trigger: "存在しないURLへアクセス", action: "ルーティング不一致検知", result: "404画面表示(自動リダイレクトしない)" },
+  { screen: "共通(AppShell)", trigger: "ログイン済みだが運営者権限なしで通報一覧へアクセス", action: "権限チェック", result: "権限なし画面を表示(ホームへ戻る導線のみ)" },
+  { screen: "共通(AppShell)", trigger: "API通信失敗", action: "エラーハンドリング", result: "トースト表示、致命的な場合はネットワークエラー画面へ" },
+];
+
+function ElementsTab() {
+  return (
+    <div className="max-w-5xl mx-auto p-6 space-y-6">
+      <h2 className="font-head text-2xl font-semibold text-cyan-300 neon-text mb-1">画面要素・インタラクション</h2>
+      <p className="text-sm text-slate-400">主要なトリガー→アクション→結果の一覧。各画面の詳細要素は「プロトタイプ」タブで実際に確認できる。</p>
+      <div className="overflow-x-auto rounded-lg border border-border">
+        <table className="w-full text-sm">
+          <thead className="bg-panel2 text-slate-400">
+            <tr>
+              <th className="text-left px-4 py-2 font-medium">画面</th>
+              <th className="text-left px-4 py-2 font-medium">トリガー</th>
+              <th className="text-left px-4 py-2 font-medium">アクション</th>
+              <th className="text-left px-4 py-2 font-medium">結果</th>
+            </tr>
+          </thead>
+          <tbody>
+            {INTERACTIONS.map((r, i) => (
+              <tr key={i} className="border-t border-border hover:bg-panel/60">
+                <td className="px-4 py-2 text-slate-300 whitespace-nowrap">{r.screen}</td>
+                <td className="px-4 py-2 text-slate-400">{r.trigger}</td>
+                <td className="px-4 py-2 text-slate-400">{r.action}</td>
+                <td className="px-4 py-2 text-slate-400">{r.result}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================================
+   タブ: デザイン方針
+   ========================================================================= */
+function DesignTab() {
+  const swatches = [
+    { name: "bg (背景)", hex: "#060a12" },
+    { name: "panel (パネル)", hex: "#0e1626" },
+    { name: "cyan (アクセント1)", hex: "#2dd6ff" },
+    { name: "magenta (アクセント2)", hex: "#ff2ecb" },
+    { name: "lime (成功/攻撃)", hex: "#c3ff3d" },
+  ];
+  return (
+    <div className="max-w-5xl mx-auto p-6 space-y-6">
+      <h2 className="font-head text-2xl font-semibold text-cyan-300 neon-text mb-1">デザイン方針</h2>
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="rounded-lg border border-border bg-panel p-4 space-y-2 text-sm text-slate-400">
+          <div><b className="text-slate-200">トーン:</b> サイバー / ネオン系(eSports・対戦ゲームらしい高揚感、視認性重視)</div>
+          <div><b className="text-slate-200">テーマ:</b> ダーク基調(対戦中の盤面の視認性・目の疲労軽減を優先)</div>
+          <div><b className="text-slate-200">見出しフォント:</b> Orbitron(ブランド・大きな数字などの主役級のみ) / Rajdhani(画面見出し)</div>
+          <div><b className="text-slate-200">本文フォント:</b> Inter + Noto Sans JP / データ表示: JetBrains Mono</div>
+          <div><b className="text-slate-200">装飾:</b> ネオングロー(box-shadow)を主要アクションボタン・対戦中の攻撃演出に使用。多用しすぎず要所に絞る</div>
+        </div>
+        <div className="rounded-lg border border-border bg-panel p-4">
+          <div className="text-sm text-slate-300 mb-2 font-medium">カラースウォッチ</div>
+          <div className="space-y-2">
+            {swatches.map(s => (
+              <div key={s.hex} className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded border border-border" style={{background: s.hex}}></div>
+                <div className="text-xs text-slate-400">{s.name} <span className="text-slate-600">{s.hex}</span></div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div className="rounded-lg border border-border bg-panel p-4 text-sm text-slate-400">
+        <b className="text-slate-200">テトリミノ配色(標準準拠 + ネオン発光):</b> I=シアン, O=イエロー, T=マゼンタ, S=ライム, Z=レッド, J=ブルー, L=オレンジ。対戦画面ではブロックにうっすらグロー(box-shadow)を付け、盤面の可読性を落とさない範囲で対戦感を演出する。
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================================
+   プロトタイプ: トースト
+   ========================================================================= */
+const ToastCtx = createContext(null);
+function ToastProvider({ children }) {
+  const [toasts, setToasts] = useState([]);
+  const push = (type, msg) => {
+    const id = Math.random().toString(36).slice(2);
+    setToasts(t => [...t, { id, type, msg }].slice(-3));
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000);
+  };
+  const colors = { success: "border-lime-500/50 text-lime-300", error: "border-rose-500/50 text-rose-300", info: "border-cyan-500/50 text-cyan-300" };
+  return (
+    <ToastCtx.Provider value={push}>
+      {children}
+      <div className="fixed top-4 right-4 z-50 space-y-2 w-72">
+        {toasts.map(t => (
+          <div key={t.id} className={"toast-in rounded-lg border bg-panel px-3 py-2 text-sm shadow-lg " + colors[t.type]}>{t.msg}</div>
+        ))}
+      </div>
+    </ToastCtx.Provider>
+  );
+}
+function useToast() { return useContext(ToastCtx); }
+
+/* =========================================================================
+   プロトタイプ: ErrorBoundary
+   ========================================================================= */
+class ErrorBoundary extends React.Component {
+  constructor(p) { super(p); this.state = { hasError: false }; }
+  static getDerivedStateFromError() { return { hasError: true }; }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex flex-col items-center justify-center h-[60vh] text-center gap-3">
+          <div className="text-3xl">⚠</div>
+          <div className="font-head text-lg font-semibold text-slate-100">問題が発生しました</div>
+          <div className="text-sm text-slate-500">画面の描画中にエラーが発生しました(ホワイトアウトは表示しません)</div>
+          <button className="mt-2 px-4 py-2 rounded bg-cyan-600 hover:bg-cyan-500 text-slate-950 text-sm font-semibold"
+            onClick={() => this.setState({ hasError: false })}>再読み込み</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+function Boom() { throw new Error("demo error"); }
+
+/* =========================================================================
+   Board (盤面モック)
+   ========================================================================= */
+const PIECE_COLORS = ["bg-cyan-400", "bg-yellow-400", "bg-fuchsia-400", "bg-lime-400", "bg-rose-400", "bg-blue-400", "bg-orange-400"];
+/* US-025: 色だけに頼らず模様/記号でもミノを区別するための対応記号(色覚サポートモード用) */
+const PIECE_SYMBOLS = ["■", "●", "▲", "◆", "✕", "▶", "★"];
+function seededCell(x, y, seed) {
+  const v = Math.sin(x * 12.9898 + y * 78.233 + seed) * 43758.5453;
+  const f = v - Math.floor(v);
+  if (f > 0.72) {
+    const idx = Math.floor(f * 100) % PIECE_COLORS.length;
+    return { color: PIECE_COLORS[idx], symbol: PIECE_SYMBOLS[idx] };
+  }
+  return null;
+}
+function Board({ cols = 10, rows = 16, seed = 1, garbage = 0, small = false, patternMode = false }) {
+  const cellCls = small ? "w-3.5 h-3.5" : "grid-cell";
+  return (
+    <div className="inline-block bg-black/40 p-1.5 rounded-md border border-border bg-grid">
+      {Array.from({ length: rows }).map((_, y) => (
+        <div key={y} className="flex gap-0.5 mb-0.5">
+          {Array.from({ length: cols }).map((_, x) => {
+            const isGarbage = y >= rows - garbage;
+            const cell = isGarbage ? null : seededCell(x, y, seed);
+            const color = isGarbage ? "bg-slate-600/70" : (cell ? cell.color : null);
+            return (
+              <div key={x} className={cellCls + " rounded-[2px] flex items-center justify-center leading-none " + (color ? color + " shadow-[0_0_6px_rgba(255,255,255,.25)]" : "bg-white/5")}>
+                {patternMode && !isGarbage && cell && !small && (
+                  <span className="text-[9px] text-black/70">{cell.symbol}</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* =========================================================================
+   TopNav
+   ========================================================================= */
+function TopNav({ nav, auth, setAuth, jump, isAdmin, setIsAdmin }) {
+  const linkCls = "text-sm px-3 py-1.5 rounded-md hover:bg-panel2 transition-colors";
+  return (
+    <header className="border-b border-border bg-bg/90 backdrop-blur sticky top-0 z-40 brick-rule">
+      <div className="max-w-6xl mx-auto flex items-center gap-2 px-4 h-14">
+        <button onClick={() => nav("home")} className="font-display text-cyan-300 neon-text tracking-wider mr-4">VS TETRIS</button>
+        <button onClick={() => nav("matchmaking")} className={linkCls}>対戦する</button>
+        <button onClick={() => nav("spectateList")} className={linkCls}>観戦</button>
+        {auth ? <button onClick={() => nav("history")} className={linkCls}>履歴</button> : null}
+        {auth && isAdmin ? <button onClick={() => nav("adminReports")} className={linkCls + " text-rose-300"}>通報一覧</button> : null}
+        <div className="flex-1" />
+        {auth ? (
+          <div className="flex items-center gap-2">
+            <button onClick={() => nav("account")} className={linkCls}>{auth}</button>
+            <button onClick={() => { setAuth(null); setIsAdmin(false); nav("home"); }} className="text-sm px-3 py-1.5 rounded-md border border-border hover:bg-panel2">ログアウト</button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <button onClick={() => nav("login")} className={linkCls}>ログイン</button>
+            <button onClick={() => nav("signup")} className="text-sm px-3 py-1.5 rounded-md bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-semibold">新規登録</button>
+          </div>
+        )}
+        {auth && (
+          <label className="ml-2 flex items-center gap-1 text-[10px] text-slate-500 whitespace-nowrap"
+            title="プロトタイプ操作: 運営者権限のデモ切り替え(実装物には出さないデバッグ用UI)">
+            <input type="checkbox" checked={isAdmin} onChange={e => setIsAdmin(e.target.checked)} />
+            🔧 運営者(デモ)
+          </label>
+        )}
+        <select
+          className="ml-3 text-xs bg-panel border border-dashed border-slate-600 rounded px-2 py-1 text-slate-400"
+          onChange={e => e.target.value && jump(e.target.value)}
+          value=""
+          title="プロトタイプ操作: 全画面ジャンプ(実装物には出さないデバッグ用UI)"
+        >
+          <option value="">🔧 全画面ジャンプ</option>
+          {SCREENS.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}
+        </select>
+      </div>
+    </header>
+  );
+}
+
+/* =========================================================================
+   各画面
+   ========================================================================= */
+function Card({ children, className = "" }) {
+  return <div className={"block-corners rounded-md border border-border bg-panel p-6 " + className}>{children}</div>;
+}
+function PrimaryBtn(props) {
+  const { className = "", ...rest } = props;
+  return <button {...rest} className={"px-4 py-2.5 rounded-md bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-semibold text-sm transition-colors " + className} />;
+}
+function GhostBtn(props) {
+  const { className = "", ...rest } = props;
+  return <button {...rest} className={"px-4 py-2.5 rounded-md border border-border hover:bg-panel2 text-sm text-slate-300 transition-colors " + className} />;
+}
+
+/* シグネチャー: ヒーローに落下・着地するミノ(I/O/T/S)。ページのテーマそのものを開幕演出にする */
+const MINO_SHAPES = {
+  I: { cells: [[0,0],[1,0],[2,0],[3,0]], color: "bg-cyan-400", shadow: "shadow-[0_0_10px_rgba(45,214,255,.6)]" },
+  O: { cells: [[0,0],[1,0],[0,1],[1,1]], color: "bg-yellow-400", shadow: "shadow-[0_0_10px_rgba(250,204,21,.5)]" },
+  T: { cells: [[0,0],[1,0],[2,0],[1,1]], color: "bg-fuchsia-400", shadow: "shadow-[0_0_10px_rgba(255,46,203,.5)]" },
+  S: { cells: [[1,0],[2,0],[0,1],[1,1]], color: "bg-lime-400", shadow: "shadow-[0_0_10px_rgba(195,255,61,.5)]" },
+};
+function MiniTetromino({ shape, delay = 0 }) {
+  const { cells, color, shadow } = MINO_SHAPES[shape];
+  return (
+    <div className="relative tet-fall" style={{ width: 76, height: 40, animationDelay: delay + "ms" }}>
+      {cells.map(([x, y], i) => (
+        <div key={i} className={"absolute rounded-[2px] " + color + " " + shadow}
+          style={{ width: 18, height: 18, left: x * 19, top: y * 19,
+                   boxShadow: "inset 1.5px 1.5px 0 rgba(255,255,255,.35), inset -1.5px -1.5px 0 rgba(0,0,0,.35)" }} />
+      ))}
+    </div>
+  );
+}
+
+function Home({ nav, auth }) {
+  const [showGuest, setShowGuest] = useState(false);
+  return (
+    <div className="max-w-3xl mx-auto p-8 text-center space-y-8">
+      <div>
+        <div className="flex items-end justify-center gap-3 mb-3" aria-hidden="true">
+          <MiniTetromino shape="T" delay={0} />
+          <MiniTetromino shape="I" delay={90} />
+          <MiniTetromino shape="O" delay={180} />
+          <MiniTetromino shape="S" delay={270} />
+        </div>
+        <h1 className="font-display text-4xl text-cyan-300 neon-text mb-2">VS TETRIS</h1>
+        <p className="font-head text-lg text-slate-400 tracking-wide">1v1 リアルタイム対戦テトリス</p>
+      </div>
+      <div className="flex flex-wrap gap-3 justify-center">
+        <PrimaryBtn onClick={() => nav("matchmaking")}>対戦相手を探す</PrimaryBtn>
+        <GhostBtn onClick={() => setShowGuest(true)}>ゲストで遊ぶ</GhostBtn>
+        <GhostBtn onClick={() => nav("room")}>ルームで対戦</GhostBtn>
+        <GhostBtn onClick={() => nav("spectateList")}>観戦する</GhostBtn>
+        <GhostBtn onClick={() => nav("tutorial")}>遊び方を見る</GhostBtn>
+      </div>
+      {showGuest && (
+        <Card className="max-w-sm mx-auto text-left">
+          <div className="text-sm font-semibold mb-3">ゲストで遊ぶ</div>
+          <input className="w-full mb-3 px-3 py-2 rounded bg-panel2 border border-border text-sm" placeholder="ニックネーム" />
+          <p className="text-xs text-slate-500 mb-3">ゲストプレイの戦績はアカウントに紐付かず保存されません(US-002)。</p>
+          <div className="flex gap-2">
+            <PrimaryBtn onClick={() => nav("matchmaking")}>この名前で始める</PrimaryBtn>
+            <GhostBtn onClick={() => setShowGuest(false)}>キャンセル</GhostBtn>
+          </div>
+        </Card>
+      )}
+      {!auth && <p className="text-xs text-slate-600">登録済みの方は<button className="underline mx-1" onClick={() => nav("login")}>ログイン</button>してください</p>}
+    </div>
+  );
+}
+
+function Login({ nav, setAuth, toast, next }) {
+  return (
+    <div className="max-w-sm mx-auto p-8">
+      <Card>
+        <h2 className="font-head text-2xl font-semibold text-cyan-300 mb-4">ログイン</h2>
+        <div className="space-y-3">
+          <input className="w-full px-3 py-2 rounded bg-panel2 border border-border text-sm" placeholder="メールアドレス" />
+          <input type="password" className="w-full px-3 py-2 rounded bg-panel2 border border-border text-sm" placeholder="パスワード" />
+        </div>
+        <button className="text-xs text-cyan-400 underline mt-2" onClick={() => nav("passwordReset")}>パスワードを忘れた方</button>
+        <PrimaryBtn className="w-full mt-4" onClick={() => { setAuth("Player_01"); toast("success", "ログインしました"); nav(next || "home"); }}>ログイン</PrimaryBtn>
+        {next && <p className="text-xs text-amber-400 mt-3">ログイン後、元のページ({screenLabel(next)})に戻ります</p>}
+        <p className="text-xs text-slate-500 mt-4">アカウントがない方は<button className="underline mx-1" onClick={() => nav("signup")}>新規登録</button></p>
+      </Card>
+    </div>
+  );
+}
+
+function Signup({ nav, setAuth, toast }) {
+  const [agree, setAgree] = useState(false);
+  const [err, setErr] = useState("");
+  return (
+    <div className="max-w-sm mx-auto p-8">
+      <Card>
+        <h2 className="font-head text-2xl font-semibold text-cyan-300 mb-4">新規登録</h2>
+        <div className="space-y-3">
+          <input className="w-full px-3 py-2 rounded bg-panel2 border border-border text-sm" placeholder="ニックネーム" />
+          <input className="w-full px-3 py-2 rounded bg-panel2 border border-border text-sm" placeholder="メールアドレス" />
+          <input type="password" className="w-full px-3 py-2 rounded bg-panel2 border border-border text-sm" placeholder="パスワード" />
+        </div>
+        <label className="flex items-start gap-2 mt-3 text-xs text-slate-400">
+          <input type="checkbox" checked={agree} onChange={e => { setAgree(e.target.checked); setErr(""); }} className="mt-0.5" />
+          <span>利用規約・プライバシーポリシーに同意する(US-024)</span>
+        </label>
+        {err && <p className="text-xs text-rose-400 mt-1">{err}</p>}
+        <PrimaryBtn className="w-full mt-4" onClick={() => {
+          if (!agree) { setErr("利用規約への同意が必須です"); return; }
+          setAuth("Player_01"); toast("success", "アカウントを作成しました"); nav("tutorial");
+        }}>登録する</PrimaryBtn>
+      </Card>
+    </div>
+  );
+}
+
+function PasswordReset({ nav, toast }) {
+  return (
+    <div className="max-w-sm mx-auto p-8">
+      <Card>
+        <h2 className="font-head text-2xl font-semibold text-cyan-300 mb-4">パスワード再設定</h2>
+        <input className="w-full px-3 py-2 rounded bg-panel2 border border-border text-sm" placeholder="登録済みメールアドレス" />
+        <PrimaryBtn className="w-full mt-4" onClick={() => { toast("info", "再設定用のメールを送信しました"); nav("login"); }}>再設定メールを送る</PrimaryBtn>
+        <GhostBtn className="w-full mt-2" onClick={() => nav("login")}>ログインに戻る</GhostBtn>
+      </Card>
+    </div>
+  );
+}
+
+function Matchmaking({ nav }) {
+  const [phase, setPhase] = useState("searching");
+  useEffect(() => {
+    const t1 = setTimeout(() => setPhase("timeoutChoice"), 3000);
+    return () => clearTimeout(t1);
+  }, []);
+  return (
+    <div className="max-w-md mx-auto p-8 text-center">
+      <Card>
+        <h2 className="font-head text-2xl font-semibold text-cyan-300 mb-4">対戦相手を探しています</h2>
+        <div className="flex justify-center mb-4">
+          <div className="w-10 h-10 border-4 border-cyan-500/30 border-t-cyan-400 rounded-full animate-spin"></div>
+        </div>
+        {phase === "searching" && <p className="text-sm text-slate-500">数秒〜数十秒でマッチが成立します(US-003)</p>}
+        {phase === "timeoutChoice" && (
+          <div className="space-y-2">
+            <p className="text-sm text-amber-400">相手が見つかりません</p>
+            <div className="flex gap-2 justify-center">
+              <PrimaryBtn onClick={() => nav("battle")}>そのまま待機を続ける(デモ: マッチ成立)</PrimaryBtn>
+              <GhostBtn onClick={() => nav("home")}>キャンセル</GhostBtn>
+            </div>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function Room({ nav, toast }) {
+  const [created, setCreated] = useState(false);
+  return (
+    <div className="max-w-md mx-auto p-8 text-center">
+      <Card>
+        <h2 className="font-head text-2xl font-semibold text-cyan-300 mb-4">ルームで対戦</h2>
+        {!created ? (
+          <PrimaryBtn onClick={() => setCreated(true)}>ルームを作成</PrimaryBtn>
+        ) : (
+          <div className="space-y-3">
+            <div className="text-xs text-slate-500">ルームID(相手に共有してください)</div>
+            <div className="flex items-center gap-2 justify-center">
+              <code className="font-mono px-3 py-1.5 rounded bg-panel2 border border-border text-cyan-300 tracking-wider">R7X9-K2</code>
+              <GhostBtn onClick={() => toast("info", "ルームIDをコピーしました")}>コピー</GhostBtn>
+            </div>
+            <div className="flex justify-center mt-2">
+              <div className="w-8 h-8 border-4 border-fuchsia-500/30 border-t-fuchsia-400 rounded-full animate-spin"></div>
+            </div>
+            <p className="text-xs text-slate-500">相手の入室を待っています(満室=2人でこのルームは締切)</p>
+            <PrimaryBtn onClick={() => nav("battle")}>デモ: 相手が入室した</PrimaryBtn>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function ReportModal({ onClose, onSubmit }) {
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      <Card className="w-80">
+        <h3 className="font-semibold text-sm mb-3">通報する</h3>
+        <select className="w-full px-3 py-2 rounded bg-panel2 border border-border text-sm mb-3">
+          <option>不適切なニックネーム</option>
+          <option>不正行為の疑い</option>
+          <option>その他</option>
+        </select>
+        <textarea className="w-full px-3 py-2 rounded bg-panel2 border border-border text-sm mb-3" rows="3" placeholder="詳細(任意)"></textarea>
+        <div className="flex gap-2 justify-end">
+          <GhostBtn onClick={onClose}>キャンセル</GhostBtn>
+          <PrimaryBtn onClick={onSubmit}>送信</PrimaryBtn>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function Battle({ nav, toast }) {
+  const [showReport, setShowReport] = useState(false);
+  const [patternMode, setPatternMode] = useState(false);
+  const [connState, setConnState] = useState("connected"); // connected | reconnecting
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-bg flex flex-col">
+      <div className="flex items-center justify-between px-6 py-3 border-b border-border">
+        <div className="font-display text-cyan-300 text-sm neon-text">VS TETRIS - 対戦中</div>
+        <div className="font-mono text-xs text-slate-500">経過時間 01:24</div>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-1 text-[11px] text-slate-500" title="US-025: 色だけでなく記号でもミノを区別する">
+            <input type="checkbox" checked={patternMode} onChange={e => setPatternMode(e.target.checked)} />
+            色覚サポート
+          </label>
+          <button className="text-xs text-slate-500 hover:text-rose-400" onClick={() => setShowReport(true)}>通報する</button>
+        </div>
+      </div>
+      {connState === "reconnecting" && (
+        <div className="bg-amber-500/15 border-b border-amber-500/30 text-amber-300 text-xs text-center py-1.5">
+          相手との通信が切断されました。再接続を待っています…(一定時間内に戻らない場合は不戦勝になります / US-010)
+        </div>
+      )}
+      <div className="flex-1 flex items-center justify-center gap-10 bg-grid">
+        <div className="text-center">
+          <div className="font-mono text-xs tracking-widest text-cyan-300 mb-2">YOU</div>
+          <Board seed={3} garbage={0} patternMode={patternMode} />
+        </div>
+        <div className="flex flex-col items-center gap-3 text-slate-500 font-mono text-xs tracking-widest">
+          <div>NEXT</div>
+          <div className="w-10 h-10 bg-yellow-400/80 rounded shadow-[0_0_10px_rgba(250,204,21,.5)]"></div>
+          <div className="mt-4">HOLD</div>
+          <div className="w-10 h-10 bg-fuchsia-400/60 rounded"></div>
+        </div>
+        <div className="text-center">
+          <div className="font-mono text-xs tracking-widest text-fuchsia-300 mb-2">OPPONENT</div>
+          <Board seed={7} garbage={2} patternMode={patternMode} />
+        </div>
+      </div>
+      <div className="flex justify-center gap-3 py-4 border-t border-border">
+        {connState === "connected" ? (
+          <GhostBtn className="border-amber-500/40 text-amber-300" onClick={() => setConnState("reconnecting")}>デモ: 相手が切断</GhostBtn>
+        ) : (
+          <>
+            <GhostBtn onClick={() => setConnState("connected")}>デモ: 再接続した</GhostBtn>
+            <PrimaryBtn onClick={() => { toast("info", "相手がタイムアウトしたため不戦勝になりました"); nav("result"); }}>デモ: タイムアウト(不戦勝)</PrimaryBtn>
+          </>
+        )}
+        <GhostBtn onClick={() => nav("result")}>デモ: 決着させる</GhostBtn>
+      </div>
+      {showReport && <ReportModal onClose={() => setShowReport(false)} onSubmit={() => { setShowReport(false); toast("success", "通報を送信しました"); }} />}
+    </div>
+  );
+}
+
+function Result({ nav, auth, toast }) {
+  const [showReport, setShowReport] = useState(false);
+  return (
+    <div className="max-w-md mx-auto p-8 text-center">
+      <Card>
+        <div className="font-display text-2xl text-lime-300 neon-text mb-2">WIN</div>
+        <div className="text-sm text-slate-400 mb-4">対戦結果(US-012)</div>
+        <div className="grid grid-cols-2 gap-3 text-sm text-left mb-6 font-mono">
+          <div className="text-slate-500">消去ライン数</div><div className="text-slate-200">18</div>
+          <div className="text-slate-500">送った攻撃量</div><div className="text-slate-200">24</div>
+          <div className="text-slate-500">対戦時間</div><div className="text-slate-200">2:14</div>
+        </div>
+        <div className="flex gap-2 justify-center">
+          <PrimaryBtn onClick={() => nav("matchmaking")}>もう一度対戦</PrimaryBtn>
+          <GhostBtn onClick={() => nav("home")}>終了する</GhostBtn>
+        </div>
+        {!auth && <p className="text-xs text-slate-600 mt-4">ゲストプレイのため、この結果は履歴に保存されません</p>}
+        <button className="text-xs text-slate-500 hover:text-rose-400 underline mt-4" onClick={() => setShowReport(true)}>通報する</button>
+      </Card>
+      {showReport && <ReportModal onClose={() => setShowReport(false)} onSubmit={() => { setShowReport(false); toast("success", "通報を送信しました"); }} />}
+    </div>
+  );
+}
+
+function SpectateList({ nav }) {
+  const [empty, setEmpty] = useState(false);
+  const matches = empty ? [] : [1, 2];
+  return (
+    <div className="max-w-2xl mx-auto p-8">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="font-head text-2xl font-semibold text-cyan-300">観戦する対戦を選ぶ</h2>
+        <button className="text-[10px] px-2 py-1 rounded border border-dashed border-slate-700 text-slate-600 hover:text-cyan-400"
+          onClick={() => setEmpty(v => !v)}>デモ: {empty ? "対戦ありに戻す" : "対戦0件にする(US-011)"}</button>
+      </div>
+      {matches.length === 0 ? (
+        <Card className="text-center text-slate-500 text-sm">現在観戦できる対戦はありません</Card>
+      ) : (
+        <div className="grid sm:grid-cols-2 gap-4">
+          {matches.map(m => (
+            <Card key={m} className="cursor-pointer hover:border-cyan-500/50" onClick={() => nav("spectate")}>
+              <div className="text-sm text-slate-300 mb-1">Player_{m}0 vs Player_{m}1</div>
+              <div className="font-mono text-xs text-slate-500">経過 0{m}:12 ・ 観戦者 {m * 3}人</div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const REACTION_LIMIT = 5;
+const REACTION_WINDOW_MS = 5000;
+function Spectate({ nav, toast }) {
+  const [reactions, setReactions] = useState([]);
+  const [showReport, setShowReport] = useState(false);
+  const recentTimestamps = useRef([]);
+
+  const sendReaction = (e) => {
+    const now = Date.now();
+    recentTimestamps.current = recentTimestamps.current.filter(t => now - t < REACTION_WINDOW_MS);
+    if (recentTimestamps.current.length >= REACTION_LIMIT) {
+      toast("error", "リアクションを送りすぎています。少し待ってから送ってください(US-016)");
+      return;
+    }
+    recentTimestamps.current.push(now);
+    setReactions(r => [...r, e + Math.random()]);
+  };
+
+  return (
+    <div className="max-w-3xl mx-auto p-8">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="font-head text-2xl font-semibold text-fuchsia-300">観戦中: Player_10 vs Player_11</h2>
+        <div className="flex items-center gap-3">
+          <button className="text-xs text-slate-500 hover:text-rose-400" onClick={() => setShowReport(true)}>通報する</button>
+          <GhostBtn onClick={() => nav("spectateList")}>一覧に戻る</GhostBtn>
+        </div>
+      </div>
+      <div className="flex justify-center gap-10 mb-4">
+        <Board seed={4} small />
+        <Board seed={9} garbage={1} small />
+      </div>
+      <div className="flex justify-center gap-2">
+        {["🔥","👏","😱"].map(e => (
+          <button key={e} className="px-3 py-1.5 rounded border border-border hover:bg-panel2" onClick={() => sendReaction(e)}>{e}</button>
+        ))}
+      </div>
+      <p className="text-center text-[10px] text-slate-600 mt-1">{REACTION_WINDOW_MS / 1000}秒間に{REACTION_LIMIT}回まで送信できます(スパム防止)</p>
+      <div className="flex justify-center gap-1 mt-2 flex-wrap">
+        {reactions.slice(-10).map(r => <span key={r} className="text-lg">{r[0]}</span>)}
+      </div>
+      {showReport && <ReportModal onClose={() => setShowReport(false)} onSubmit={() => { setShowReport(false); toast("success", "通報を送信しました"); }} />}
+    </div>
+  );
+}
+
+function History({ nav, auth }) {
+  const rows = [
+    { r: "WIN", opp: "Player_22", date: "2026-08-29" },
+    { r: "LOSE", opp: "Player_08", date: "2026-08-28" },
+  ];
+  if (!auth) {
+    /* US-013: ゲスト/未ログインは「履歴が保存されていない」旨を案内する。ログイン画面へ強制リダイレクトはしない
+       (ゲストプレイヤーはそもそもアカウントを持たずログインできないため) */
+    return (
+      <div className="max-w-2xl mx-auto p-8 text-center">
+        <h2 className="font-head text-2xl font-semibold text-cyan-300 mb-4">対戦履歴</h2>
+        <Card className="text-sm text-slate-400 space-y-3">
+          <p>ゲストプレイの対戦履歴は保存されません(US-013)。</p>
+          <p className="text-xs text-slate-500">登録プレイヤーになると、対戦履歴が新しい順に記録・確認できるようになります。</p>
+          <div className="flex gap-2 justify-center pt-2">
+            <PrimaryBtn onClick={() => nav("signup")}>新規登録する</PrimaryBtn>
+            <GhostBtn onClick={() => nav("login")}>ログイン</GhostBtn>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+  return (
+    <div className="max-w-2xl mx-auto p-8">
+      <h2 className="font-head text-2xl font-semibold text-cyan-300 mb-4">対戦履歴</h2>
+      <div className="rounded-lg border border-border divide-y divide-border">
+        {rows.map((r, i) => (
+          <div key={i} className="flex items-center justify-between px-4 py-3 hover:bg-panel/60 cursor-pointer" onClick={() => nav("replay")}>
+            <span className={r.r === "WIN" ? "text-lime-400 text-sm font-semibold" : "text-rose-400 text-sm font-semibold"}>{r.r}</span>
+            <span className="text-sm text-slate-400">vs {r.opp}</span>
+            <span className="font-mono text-xs text-slate-600">{r.date}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Replay({ nav }) {
+  return (
+    <div className="max-w-md mx-auto p-8 text-center">
+      <h2 className="font-head text-2xl font-semibold text-cyan-300 mb-4">リプレイ再生</h2>
+      <Board seed={12} />
+      <div className="flex justify-center gap-2 mt-4">
+        <GhostBtn>◀◀</GhostBtn>
+        <PrimaryBtn>▶ 再生</PrimaryBtn>
+        <GhostBtn>▶▶</GhostBtn>
+      </div>
+      <GhostBtn className="mt-4" onClick={() => nav("history")}>履歴に戻る</GhostBtn>
+    </div>
+  );
+}
+
+function Account({ nav, toast, setAuth, setIsAdmin }) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [colorSupport, setColorSupport] = useState(false);
+  return (
+    <div className="max-w-md mx-auto p-8 space-y-4">
+      <h2 className="font-head text-2xl font-semibold text-cyan-300">アカウント設定</h2>
+      <Card>
+        <div className="text-sm font-semibold mb-3">パスワード再設定</div>
+        <PrimaryBtn onClick={() => nav("passwordReset")}>再設定する</PrimaryBtn>
+      </Card>
+      <Card>
+        <div className="text-sm font-semibold mb-1">アクセシビリティ(US-025)</div>
+        <p className="text-xs text-slate-500 mb-3">見え方や操作環境に合わせて対戦画面の表示・キー割当を変更できます。</p>
+        <label className="flex items-center gap-2 text-sm text-slate-300 mb-3">
+          <input type="checkbox" checked={colorSupport} onChange={e => setColorSupport(e.target.checked)} />
+          色覚サポート(ミノを色に加えて記号でも区別)を既定で有効にする
+        </label>
+        <div className="text-xs text-slate-500 mb-2">キー割当</div>
+        <div className="grid grid-cols-2 gap-y-1 text-xs font-mono text-slate-400 mb-3">
+          <div>左移動</div><div className="text-slate-200">←</div>
+          <div>右移動</div><div className="text-slate-200">→</div>
+          <div>回転</div><div className="text-slate-200">↑</div>
+          <div>ソフトドロップ</div><div className="text-slate-200">↓</div>
+          <div>ハードドロップ</div><div className="text-slate-200">Space</div>
+          <div>ホールド</div><div className="text-slate-200">Shift</div>
+        </div>
+        <GhostBtn onClick={() => toast("info", "キー割当の変更UIは今後拡張予定です")}>キー割当を変更する</GhostBtn>
+      </Card>
+      <Card className="border-rose-500/30">
+        <div className="text-sm font-semibold mb-1 text-rose-300">退会(アカウント削除)</div>
+        <p className="text-xs text-slate-500 mb-3">実行すると元に戻せません。個人情報とデータが削除されます。</p>
+        {!confirmDelete ? (
+          <GhostBtn className="border-rose-500/40 text-rose-300" onClick={() => setConfirmDelete(true)}>退会する</GhostBtn>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-xs text-rose-400">本当に退会しますか？この操作は取り消せません。</p>
+            <div className="flex gap-2">
+              <button className="px-3 py-1.5 rounded bg-rose-600 hover:bg-rose-500 text-white text-sm" onClick={() => { setAuth(null); setIsAdmin(false); toast("info", "退会処理が完了しました"); nav("home"); }}>退会を確定する</button>
+              <GhostBtn onClick={() => setConfirmDelete(false)}>キャンセル</GhostBtn>
+            </div>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function Tutorial({ nav }) {
+  return (
+    <div className="max-w-xl mx-auto p-8">
+      <h2 className="font-head text-2xl font-semibold text-cyan-300 mb-4">遊び方</h2>
+      <Card className="space-y-3 text-sm text-slate-400">
+        <p><b className="text-slate-200">操作:</b> ← → 移動 / ↑ 回転 / Space ハードドロップ / Shift ホールド</p>
+        <p><b className="text-slate-200">おじゃまライン:</b> 2ライン以上同時に消すと相手の盤面下部に「おじゃまライン」を送れます。相手から受けた攻撃はあなたの消去で相殺できます。</p>
+        <p><b className="text-slate-200">決着:</b> 盤面上部までブロックが積み上がるとゲームオーバーです。</p>
+      </Card>
+      <PrimaryBtn className="mt-4" onClick={() => nav("matchmaking")}>対戦を始める</PrimaryBtn>
+    </div>
+  );
+}
+
+function AdminReports({ nav }) {
+  const [empty, setEmpty] = useState(false);
+  const allReports = [
+    { id: 1, target: "Player_45", reason: "不適切なニックネーム", date: "2026-08-29 21:03" },
+  ];
+  const reports = empty ? [] : allReports;
+  return (
+    <div className="max-w-2xl mx-auto p-8">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="font-head text-2xl font-semibold text-rose-300">通報一覧(運営者)</h2>
+        <button className="text-[10px] px-2 py-1 rounded border border-dashed border-slate-700 text-slate-600 hover:text-rose-400"
+          onClick={() => setEmpty(v => !v)}>デモ: {empty ? "通報ありに戻す" : "通報0件にする(US-022)"}</button>
+      </div>
+      {reports.length === 0 ? (
+        <Card className="text-center text-slate-500 text-sm">通報はありません</Card>
+      ) : (
+        <div className="rounded-lg border border-border divide-y divide-border">
+          {reports.map(r => (
+            <div key={r.id} className="px-4 py-3 text-sm flex justify-between">
+              <span className="text-slate-300">{r.target}</span>
+              <span className="text-slate-500">{r.reason}</span>
+              <span className="font-mono text-xs text-slate-600">{r.date}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NotFound({ nav }) {
+  return (
+    <div className="max-w-md mx-auto p-8 text-center">
+      <div className="font-display text-4xl text-slate-600 mb-2">404</div>
+      <p className="text-sm text-slate-500 mb-4">お探しのページは見つかりませんでした。</p>
+      <div className="flex gap-2 justify-center">
+        <PrimaryBtn onClick={() => nav("home")}>ホームへ戻る</PrimaryBtn>
+        <GhostBtn onClick={() => location.reload()}>再読み込み</GhostBtn>
+      </div>
+    </div>
+  );
+}
+function Forbidden({ nav }) {
+  return (
+    <div className="max-w-md mx-auto p-8 text-center">
+      <div className="font-head text-3xl font-semibold text-amber-500 mb-2">権限なし</div>
+      <p className="text-sm text-slate-500 mb-4">この操作を行う権限がありません。</p>
+      <PrimaryBtn onClick={() => nav("home")}>ホームへ戻る</PrimaryBtn>
+    </div>
+  );
+}
+function NetworkError({ nav }) {
+  return (
+    <div className="max-w-md mx-auto p-8 text-center">
+      <div className="text-3xl mb-2">📡</div>
+      <div className="font-head text-lg font-semibold text-slate-100 mb-2">通信エラー</div>
+      <p className="text-sm text-slate-500 mb-4">サーバーと通信できませんでした。時間をおいて再度お試しください。</p>
+      <div className="flex gap-2 justify-center">
+        <PrimaryBtn onClick={() => location.reload()}>再読み込み</PrimaryBtn>
+        <GhostBtn onClick={() => nav("home")}>ホームへ戻る</GhostBtn>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================================
+   プロトタイプ本体
+   ========================================================================= */
+function PrototypeApp() {
+  const [screen, setScreen] = useState("home");
+  const [auth, setAuth] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [next, setNext] = useState(null);
+  const [boom, setBoom] = useState(false);
+  const toast = useToast();
+
+  /* 「history」は含めない: ゲスト/未ログインはログイン強制ではなく画面内で案内する(US-013) */
+  const authRequired = ["account"];
+
+  const nav = (s) => {
+    if (s === "adminReports") {
+      if (!auth) {
+        setNext(s);
+        setScreen("login");
+        toast("info", "ログインが必要です");
+        return;
+      }
+      if (!isAdmin) {
+        setScreen("forbidden");
+        return;
+      }
+      setScreen(s);
+      return;
+    }
+    if (authRequired.includes(s) && !auth) {
+      setNext(s);
+      setScreen("login");
+      toast("info", "ログインが必要です");
+      return;
+    }
+    setScreen(s);
+  };
+
+  const screenProps = { nav, auth, setAuth, toast, next, isAdmin, setIsAdmin };
+  const isFullscreen = screen === "battle";
+
+  const renderScreen = () => {
+    switch (screen) {
+      case "home": return <Home {...screenProps} />;
+      case "login": return <Login {...screenProps} />;
+      case "signup": return <Signup {...screenProps} />;
+      case "passwordReset": return <PasswordReset {...screenProps} />;
+      case "matchmaking": return <Matchmaking {...screenProps} />;
+      case "room": return <Room {...screenProps} />;
+      case "battle": return <Battle {...screenProps} />;
+      case "result": return <Result {...screenProps} />;
+      case "spectateList": return <SpectateList {...screenProps} />;
+      case "spectate": return <Spectate {...screenProps} />;
+      case "history": return <History {...screenProps} />;
+      case "replay": return <Replay {...screenProps} />;
+      case "account": return <Account {...screenProps} />;
+      case "tutorial": return <Tutorial {...screenProps} />;
+      case "adminReports": return <AdminReports {...screenProps} />;
+      case "notFound": return <NotFound {...screenProps} />;
+      case "forbidden": return <Forbidden {...screenProps} />;
+      case "networkError": return <NetworkError {...screenProps} />;
+      default: return <NotFound {...screenProps} />;
+    }
+  };
+
+  return (
+    <div className="min-h-[80vh] bg-bg">
+      {!isFullscreen && <TopNav nav={nav} auth={auth} setAuth={setAuth} jump={nav} isAdmin={isAdmin} setIsAdmin={setIsAdmin} />}
+      <ErrorBoundary key={boom}>
+        {boom ? <Boom /> : renderScreen()}
+      </ErrorBoundary>
+      {!isFullscreen && (
+        <div className="fixed bottom-3 right-3">
+          <button className="text-[10px] px-2 py-1 rounded border border-dashed border-slate-700 text-slate-600 hover:text-rose-400 hover:border-rose-500/40"
+            onClick={() => setBoom(true)}>⚠ ErrorBoundaryデモ</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PrototypeTab() {
+  return (
+    <ToastProvider>
+      <PrototypeApp />
+    </ToastProvider>
+  );
+}
+
+/* =========================================================================
+   App root: タブ切替
+   ========================================================================= */
+const TABS = [
+  { key: "overview", label: "概要" },
+  { key: "flows", label: "ユーザーフロー図" },
+  { key: "prototype", label: "クリッカブルプロトタイプ" },
+  { key: "elements", label: "画面要素・インタラクション" },
+  { key: "design", label: "デザイン方針" },
+];
+
+function App() {
+  const [tab, setTab] = useState("overview");
+  return (
+    <div className="min-h-screen">
+      <div className="border-b border-border sticky top-0 z-50 bg-bg/95 backdrop-blur brick-rule">
+        <div className="max-w-6xl mx-auto flex gap-1 px-4 overflow-x-auto">
+          {TABS.map(t => (
+            <button key={t.key}
+              className={"tab-btn whitespace-nowrap px-4 py-3 text-sm border-b-2 " + (tab === t.key ? "border-cyan-400 text-cyan-300" : "border-transparent text-slate-500 hover:text-slate-300")}
+              onClick={() => setTab(t.key)}>{t.label}</button>
+          ))}
+        </div>
+      </div>
+      {tab === "overview" && <OverviewTab />}
+      {tab === "flows" && <FlowsTab />}
+      {tab === "prototype" && <PrototypeTab />}
+      {tab === "elements" && <ElementsTab />}
+      {tab === "design" && <DesignTab />}
+    </div>
+  );
+}
+
+createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
