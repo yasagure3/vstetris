@@ -1,52 +1,54 @@
 # ルーム対戦
+<!-- 変更履歴 [2026-09-18]: DOによる存在・期限・予約席管理とキャンセルを統一。 -->
 
 - 種別: 機能設計書
 - 対象 UC: UC-005(ルームを作成して友人と対戦する)
 
 ## 何を作るか
-
-ランダムマッチングを介さず、ルームIDを共有して特定の相手と対戦を始める機能。対戦本編そのものはfeatures/battle.mdのBattleRoomをそのまま使う(ルームはBattleRoomのIDを事前に払い出す入り口にすぎない)。
+ルームコードを共有して2人で対戦する。対戦本編はbattle.mdを使う。UI_SKETCH.html「Room」に対応する。
 
 ## 入出力と振る舞い
-
 | 操作 | 画面に起きること |
 |---|---|
-| 「ルームを作成」を選ぶ | `POST /api/rooms`でルームID発行、続けて`POST /api/ws-tickets`(`scope: "room"`)でチケットを取得し自分自身が`/ws/rooms/:roomId?role=player&ticket=...`へ接続(作成者が1枠を確保する。この接続でBattleRoomが`waiting`状態になりKVレジストリ`match:<roomId>`が作成される)、画面にID表示+コピー導線 |
-| ルームIDを相手に共有 | (アプリ外での共有。UI上はコピー操作のみ提供) |
-| 相手がルームIDで入室 | 同様にチケットを取得し`/ws/rooms/:roomId?role=player&ticket=...`へ接続、2人目が揃った時点でbattle.mdのフローに合流(`battle_start`配信) |
-| 3人目が同じIDで対戦者として入室しようとする | 満室エラー(features/battle.md「API」の409相当と同じ仕組み) |
-
-UI_SKETCH.html「Room」画面に対応。
+| ルーム作成 | 有効な登録／ゲストセッションでPOST /api/rooms。P1予約済みroomIdを受け取り、roomチケットを取得して接続。コードとコピー導線を表示 |
+| IDを共有 | アプリ外で共有 |
+| 相手がコード入力 | roomチケットを取得し接続。P2を原子的に確保して2人が揃うとbattle_start |
+| 満室・存在しない・期限切れ | チケット発行RESTの409/404で案内する。発行後に競合してWS接続が失敗した場合は共通の接続失敗と再試行導線 |
+| 作成者がキャンセル | DELETE /api/rooms/:roomId。waitingなら即座に解散しトップへ |
 
 ## API
-
 ### POST /api/rooms
-- 認証: 不要(ゲスト可)
-- リクエスト: なし
-- レスポンス(201): `{ "roomId": string, "expiresAt": string }`
-- 挙動: `roomId`はCrockford Base32で8文字(CSPRNGで生成、KVに既存キーがあれば再生成)。KVに`room_created:<roomId>`として作成時刻を記録し、有効期限10分(既定値、TTLで自動失効)を設定する
-- エラー: なし
+- 認証: 登録JWTまたは署名付きゲストCookie必須。guest-session.mdと同じ検証。登録不要だが身元未確定のリクエストは401。
+- リクエスト: `{displayName?:string}`。ゲストは必須、共通nicknameFilterを適用。登録者はusers.nicknameを使う。
+- レスポンス201: `{roomId:string,expiresAt:string}`。
+- IDはCSPRNGによるCrockford Base32の8文字。対象DOの内部initialize RPCで未作成を原子的に確認し、衝突なら再生成する。KVによる重複判定は使わない。
+- initializeはroomId、source:private、createdAt、expiresAt=createdAt+10分、ownerId、P1のplayerRefを永続化する。成功するまで201を返さない。外部からinitializeを呼べるルートは設けない。
+- 不正名400、保存失敗503。連打はUIで抑止するが、別リクエストは別roomIdとなる。
 
-以後の接続は features/battle.md の `WS /ws/rooms/:roomId?role=player|spectator` をそのまま使う。
+### DELETE /api/rooms/:roomId
+- 認証: 作成者本人のJWTまたは有効な署名付きゲストCookie。Cookie経路はOrigin検証。
+- waitingをfinishedへ原子的に遷移して204。同じ所有者の再送も204。進行中は409 ROOM_ALREADY_STARTED。他人／未作成は404。
+- キャンセルと2人目入室が競合した場合、DOで先に確定した状態を採用する。
+
+### 入室
+チケット発行時にDOの存在・期限・参加資格を確認し、接続時にも再確認する。privateはP1予約を奪わず、P2は最初の異なるplayerRefに確定する。コードを知る第三者がP2になる可能性は共有コード方式の制約として残る。randomの参加者予約はmatchmaking.mdに従う。形式が正しくても未初期化DOは入室不可。観戦者は席を消費せず、privateのwaitingは観戦不可。
 
 ## 実装の配置
-
-| 処理 | 層 | 実装先ファイル |
-| --- | --- | --- |
-| ルームID発行・有効期限管理(KV) | adapter | `src/server/modules/room/adapter/createRoom.ts` |
-| ルームID表示・コピー・入室待ちUI | front | `src/front/pages/Room.tsx` |
+| 処理 | 層 | 実装先 |
+|---|---|---|
+| 作成・解散ルート | adapter | src/server/modules/room/adapter/createRoom.ts, deleteRoom.ts |
+| 期限・席・状態 | DO | src/server/battle/battleRoom.ts |
+| コード表示・コピー・待機 | front | src/front/pages/Room.tsx |
 
 ## エッジケースの決定
-
-- **空・最小データ**: 該当なし(入力を取らないエンドポイントのため)
-- **上限・境界値**: ルームIDの有効期限は10分(既定値、`room_created:<roomId>`のKV TTLで作成時刻起点に自動失効)。features/battle.mdの`waiting`タイムアウト(8文字roomIdは10分)は最初のplayer接続時刻起点のため、`room_created:`のTTLとは起点が異なりうる(作成〜入室までに時間がかかった場合、ルームの実質的な生存時間が最大約20分になりうる)。実害は軽微(誰も専有・課金しないため)なため、MVPでは起点の統一は行わないTTL失効後は`room_created:<roomId>`キー自体がKVから消えるため、「存在しない」状態がマッチメイキング経由(そもそもキーを書かない)と区別できなくなる問題がある。これを**roomIdの形式で区別する**ことで解決する: room.mdが発行するroomIdはCrockford Base32の**8文字**(本節「POST /api/rooms」参照)、matchmaking.mdが発行するroomIdは**ULID(26文字)**とし、battle.mdのゲート判定は「roomIdが8文字なら`room_created:`の存在(未失効)を必須とし、26文字なら経路チェック自体を行わない」というroomIdの長さだけで機械的に判定する(features/battle.md「API」節参照)
-- **エラー時に見えるもの**: 期限切れ・存在しないルームIDへのアクセスは「ルームが見つかりません」を表示しトップへ戻す導線を出す
-- **並行操作・二重実行**: 作成者が「ルームを作成」を連打した場合、都度新しいルームIDが発行される(冪等にしない。MVPでは連打対策はUIのボタン無効化のみで十分とする)。作成者が接続する前に(ルームIDを推測または横取りした)他の2名が先に入室してしまうケースはMVPでは対策しない(ルームIDは第三者に知られない前提のためリスクは低いと判断。既知の制約として許容する)
-- **ルーム解散(UC-005 E2)**: 能動的な解散APIは設けない。作成者が入室を待たずに離脱した場合はフロント側で作成状態を破棄するのみとし、KVの`room_created:<roomId>`は10分TTLで自然失効する。作成者が接続済み(=BattleRoomが`waiting`)の場合は、features/battle.mdの状態機械により8文字roomIdの`waiting`タイムアウト(10分、`room_created:`と同じ長さに揃えてある)で自動解散する。誰も専有・課金しないため実害はない
-- **再表示時の整合**: 作成者がルーム作成後にページを再読み込みすると、発行済みのroomIdを保持していない限り再作成が必要になる(MVPではURLクエリ等での永続化はスコープ外)
+- 期限は最初の接続時刻で延長しない。期限と同時刻は失効。開始後は入室期限による解散をしない。
+- waiting中の作成者切断は即座に解散。接続前のキャンセルもDELETEで解散する。ブラウザー強制終了等で通知できなければ期限で解散する。
+- roomIdはURLに保持し、再読込はDOの状態を確認する。waitingで切断によって解散済みなら再作成を案内し、進行中ならbattle.mdの再接続猶予を適用する。
+- KVは進行中一覧の候補索引のみ。privateのwaitingは掲載せず、開始時に掲載する。終了フラグ確定後に削除し、closeで再掲載しない。
 
 ## テスト方針
+- 単体: ID形式・衝突再生成・期限境界。
+- 結合: 初期化失敗時に201を返さないこと、未初期化ULID/8文字IDの拒否、P1予約維持、P2同時入室競合、キャンセルと開始の競合、開始前離脱・期限解散。
+- E2E: 作成→コード共有→別ブラウザーが入室→2人で開始。満室表示、キャンセル済みコード、再読込も検証。
 
-- 単体: ルームID生成の一意性、有効期限判定ロジック
-- 結合: `POST /api/rooms`のレスポンス形式、期限切れルームへの入室拒否、2人目入室でbattle.mdのBattleRoomフローへ正しく合流すること
-- E2E(golden path): ルーム作成 → 別ブラウザコンテキストでルームID入力 → 2人揃って対戦画面に遷移することをPlaywrightで確認
+入室expiresAtはwaitingの初回入室だけに適用する。進行中の本人復帰ではチケット発行時・接続時とも、固定席・接続世代・disconnectDeadlineで判定する。

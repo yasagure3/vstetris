@@ -1,11 +1,12 @@
 # 観戦
+<!-- 変更履歴 [2026-09-18]: KVの結果整合性とローカルPoCの限界を明記。 -->
 
 - 種別: 機能設計書
 - 対象 UC: UC-006(対戦を観戦する)
 
 ## 何を作るか
 
-進行中の対戦一覧を表示し、第三者視点で盤面をリアルタイム観戦、簡易リアクションを送れる機能。docs/design/FEASIBILITY.md PoC-5で対戦者2+観戦者8までのブロードキャストと一覧レジストリの整合を検証済み。**観戦一覧はランダムマッチング(UC-004)・ルーム対戦(UC-005)を区別せず、進行中の全対戦を表示する**(UC-006 BR-002で確定)。
+進行中の対戦一覧を表示し、第三者視点で盤面をリアルタイム観戦、簡易リアクションを送れる機能。docs/design/FEASIBILITY.md PoC-5で対戦者2+観戦者8までのブロードキャストとローカル一覧レジストリの整合を検証済み。本番の即時整合性や無制限の収容能力は未検証。**観戦一覧はランダムマッチング(UC-004)・ルーム対戦(UC-005)を区別せず、進行中の全対戦を表示する**(UC-006 BR-002で確定)。
 
 ## 入出力と振る舞い
 
@@ -13,7 +14,7 @@
 |---|---|
 | 「観戦する」を選ぶ | `GET /api/rooms/active`で進行中の対戦一覧を取得(ランダムマッチ・ルーム対戦を区別しない。ただし公開タイミングは経路により異なる。下記API節参照) |
 | 対戦が1件もない | 「観戦できる対戦はありません」を表示 |
-| 対戦を1つ選ぶ | `POST /api/ws-tickets`(`scope: "room"`、省略も可)でチケット取得後、`/ws/rooms/:roomId?role=spectator&ticket=...`へ接続、両者の盤面をリアルタイム表示 |
+| 対戦を1つ選ぶ | `POST /api/ws-tickets`(`scope: "room"`, `role: "spectator"`, `roomId`を指定。匿名ならチケット取得自体を省略可)でチケット取得後、`/ws/rooms/:roomId?role=spectator&ticket=...`へ接続、両者の盤面をリアルタイム表示 |
 | リアクション送信 | 観戦者・対戦者を含む全接続者に一時表示。5秒間に5回まで(スパム防止、下記確定値) |
 | 制限超過でリアクション拒否 | トーストで「少し待ってから送ってください」を表示 |
 | 「観戦をやめる」を選ぶ(対戦終了前) | WebSocket切断、観戦一覧へ戻る(観戦者数はKV上で自動的にデクリメントされる) |
@@ -31,9 +32,9 @@ UI_SKETCH.html「SpectateList」「Spectate」画面に対応。
 
 ### GET /api/rooms/active
 - 認証: 不要
-- レスポンス(200): `{ "matches": [{ "roomId": string, "status": "waiting"|"in_progress", "players": string[], "spectatorCount": number, "startedAt": string }] }`。`players`は接続中プレイヤーの`displayName`配列(内部ID・`playerRef.id`は公開しない)。`startedAt`は最初のplayer接続時刻(ISO8601、`waiting`中の対戦ではまだ2人揃っていないが値は入る)
-- `status`の意味: `waiting`はplayerが1名のみ接続(features/battle.md「BattleRoomの状態」参照)、`in_progress`は2名揃い対戦中
-- **公開範囲**: roomIdが26文字(ULID、マッチメイキング経由)は`waiting`/`in_progress`とも一覧に含める。roomIdが8文字(ルーム対戦経由)は**`in_progress`になるまで一覧に含めない**(DESIGN.md横断規約「Workers KVのキー空間」参照。ルームIDを知る者だけが入室できる前提を、一覧での早期露出によって崩さないため)
+- レスポンス(200): `{ "matches": [{ "roomId": string, "status": "waiting"|"in_progress", "players": string[], "spectatorCount": number, "startedAt": string|null, "createdAt": string }] }`。`players`は接続中プレイヤーの`displayName`配列(内部ID・`playerRef.id`は公開しない)。`startedAt`は2名が揃った対戦開始時刻(ISO8601)、waitingではnull。createdAtはDO初期化時刻
+- `status`の意味: `waiting`は初期化済み・未開始(0〜1名接続)(features/battle.md「BattleRoomの状態」参照)、`in_progress`は2名揃い対戦中
+- **公開範囲**: DOに記録したsource=randomは`waiting`/`in_progress`とも一覧に含める。source=privateは**`in_progress`になるまで一覧に含めない**(DESIGN.md横断規約「Workers KVのキー空間」参照。ルームIDを知る者だけが入室できる前提を、一覧での早期露出によって崩さないため)
 - データソース: DESIGN.md「アーキテクチャと技術選定」のKVレジストリ(`match:<roomId>`)。書き込みタイミングの正本はDESIGN.md横断規約「Workers KVのキー空間」(このファイルでは繰り返さない)
 
 ### WS /ws/rooms/:roomId?role=spectator の追加メッセージ(features/battle.mdの共通部分を除く)
@@ -44,7 +45,7 @@ UI_SKETCH.html「SpectateList」「Spectate」画面に対応。
 
 | 処理 | 層 | 実装先ファイル |
 | --- | --- | --- |
-| 進行中対戦一覧の取得(KV読み出し、8文字roomIdの`waiting`除外ロジックを含む) | adapter | `src/server/modules/spectate/adapter/activeRooms.ts` |
+| 進行中対戦一覧の取得(KV読み出し、privateの`waiting`除外ロジックを含む) | adapter | `src/server/modules/spectate/adapter/activeRooms.ts` |
 | KVレジストリ(`match:<roomId>`)の読み書き関数(Honoルートではなく純粋なKVアクセス関数) | adapter | `src/server/modules/spectate/adapter/matchRegistry.ts`(features/battle.mdのBattleRoom DOから呼ばれる) |
 | リアクションのレート制限・ブロードキャスト | DO | `src/server/battle/battleRoom.ts`(features/battle.mdと共通のDOに追加) |
 | 通報導線(「通報する」→ReportModal) | front | `src/front/pages/Spectate.tsx`(features/report.md参照) |
@@ -55,7 +56,7 @@ UI_SKETCH.html「SpectateList」「Spectate」画面に対応。
 - **空・最小データ**: 進行中の対戦が0件の場合の表示はUC-006代替フローA(空状態表示)の通り
 - **上限・境界値**: 観戦者数に上限は設けない(PoC-5で8名まで動作確認済み。上限が必要になった場合は`role=spectator`接続時に人数チェックを追加する形で拡張できる設計にする)
 - **エラー時に見えるもの**: 観戦中に対戦が異常終了(通信断等)した場合、`battle_end`が届かないまま接続が切れることがある。この場合フロントは「対戦が中断されました」を表示してから一覧に戻す(UC-006 E2)
-- **並行操作・二重実行**: 同一観戦者が同じルームに複数タブで接続することを禁止しない(観戦は人数無制限のため問題にならない)
+- **並行操作・二重実行**: 同一観戦者が同じルームに複数タブで接続することを禁止しない(複数タブを許容する。ただし収容能力とリソース上限は別途負荷検証する)
 - **再表示時の整合**: 観戦一覧は`GET /api/rooms/active`の**5秒間隔**ポーリングで更新する(既定値)。リアルタイムプッシュ配信は一覧自体には行わない(個々の観戦画面内の盤面のみWebSocketでリアルタイム)
 
 ## テスト方針
@@ -63,3 +64,11 @@ UI_SKETCH.html「SpectateList」「Spectate」画面に対応。
 - 単体: リアクションのレート制限ロジック(5秒5回の境界値)
 - 結合: `GET /api/rooms/active`がKVレジストリと実際のBattleRoom接続状態(観戦者増減・対戦終了)に追従すること、ランダムマッチ・ルーム対戦の両方が一覧に含まれること
 - E2E(golden path): 対戦中のルームに観戦者として接続 → 両者の盤面が更新されること → リアクション送信 → 対戦終了で結果表示に切り替わることをPlaywrightで確認
+
+## 一覧の更新遅延
+
+KVの結果整合性により新しい対戦がすぐ表示されない、終了済み対戦が残る場合がある。5秒ポーリングは反映期限の保証ではない。接続先DOで状態を再確認し、終了済みなら案内を出して一覧へ戻す。観戦者数も概数として扱う。キー更新の集約・再試行・TTLはDESIGN.md「KVレジストリの整合性」に従う。
+
+結合試験にはKVが古い状態／キー欠落／更新失敗を返すケース、終了後のcloseイベント、再起動後のfinished復元を含める。
+
+接続前の一覧は候補のみであり、private waiting／未初期化／終了済みのDOは観戦不可。チケットを取得する場合はrole:spectatorを明記する。匿名接続のupgrade失敗ではHTTP状態をブラウザーから取得できないため「接続できません。対戦が終了した可能性があります」と表示し一覧へ戻す。観戦者への通報用表示名は従来どおり固定値「観戦者」。録画はbattle.mdの盤面スナップショット契約に従う。

@@ -309,3 +309,9 @@
 2. [x] PoC-2(cognito-guest-coexistence)を実施し、blocker=trueを解消する — verified (confidence 0.85)
 3. [x] PoC-3(matchmaking-queue-do)・PoC-4(battle-result-persistence)・PoC-5(spectator-broadcast)を実施する — いずれも verified (confidence 0.88 / 0.92 / 0.90)
 4. [ ] 全PoC結果を踏まえてDESIGN.md(横断設計)に着手する
+
+## 設計への反映補足（2026-09-18）
+
+全5件のverifiedは各PoCの限定されたローカル成功基準に対する判定として維持する。KV一覧の本番即時一致、インターネットRTT、Cognito成功トークンでの実HTTP認証、Hibernationと切断復旧を統合した動作は未検証。設計書のリリース前確認事項に引き継いだ。PoC-1の単方向切断試験を両者同時切断まで検証済みと解釈しない。
+
+保存方針はDESIGN.md「承認済みの運用方針」で確定した。作業フォルダには既に9件の機能設計があるため、続きは既存資料の整合性レビューから行う。

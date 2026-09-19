@@ -7,39 +7,22 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdn.tailwindcss.com"></script>
-<script>
-  tailwind.config = {
-    darkMode: 'class',
-    theme: {
-      extend: {
-        colors: {
-          bg: '#060a12',
-          panel: '#0e1626',
-          panel2: '#0b111d',
-          border: '#1e2a3f',
-        },
-        fontFamily: {
-          display: ['Orbitron', 'sans-serif'],
-          head: ['Rajdhani', 'sans-serif'],
-          body: ['Inter', 'Noto Sans JP', 'sans-serif'],
-          mono: ['"JetBrains Mono"', 'monospace'],
-        },
-      },
-    },
-  };
-</script>
-<script type="importmap">
-{
-  "imports": {
-    "react": "https://esm.sh/react@19",
-    "react/jsx-runtime": "https://esm.sh/react@19/jsx-runtime",
-    "react/jsx-dev-runtime": "https://esm.sh/react@19/jsx-dev-runtime",
-    "react-dom/client": "https://esm.sh/react-dom@19/client"
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<style type="text/tailwindcss">
+  @theme {
+    --color-bg: #060a12;
+    --color-panel: #0e1626;
+    --color-panel2: #0b111d;
+    --color-border: #1e2a3f;
+    --font-display: 'Orbitron', sans-serif;
+    --font-head: 'Rajdhani', sans-serif;
+    --font-body: 'Inter', 'Noto Sans JP', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
   }
-}
-</script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
 <style>
   :root {
     --cyan: #2dd6ff;
@@ -107,9 +90,9 @@
 <body class="bg-bg text-slate-200">
 <div id="root"></div>
 
-<script type="text/babel" data-type="module" data-presets="react">
-import React, { useState, useEffect, useRef, createContext, useContext } from "react";
-import { createRoot } from "react-dom/client";
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, createContext, useContext } = React;
+const { createRoot } = ReactDOM;
 
 /* =========================================================================
    共通データ: 画面一覧・US 対応
