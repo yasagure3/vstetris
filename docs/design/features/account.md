@@ -53,9 +53,18 @@ Cognito確認コード検証(ConfirmSignUp)成功後にフロントエンドが�
 ### DELETE /api/account
 - 認証: 登録プレイヤー本人。確認モーダルで確定後に実行。
 - レスポンス: 両ストアで削除完了なら204。削除要求を永続化できたが処理中なら202 `{ "status": "deleting" }`。要求記録自体が失敗した場合503 `ACCOUNT_DELETE_UNAVAILABLE`。
-- 猶予期間は設けない。DESIGN.md「保存の制約とトランザクション境界」に従って削除要求を先に記録し、通常API・プロフィール再作成・新しいチケット発行を即時拒否する。
-- Cognito削除、D1の本人履歴・リプレイ・設定・usersの削除を段階記録する。失敗時はCronで再試行し、Cognitoの既削除は成功扱いとする。D1の削除はbatchで行う。
-- 他人の履歴内の本人参照はnullにし、opponent_labelは「退会済みプレイヤー」に置き換える。通報は現行スキーマでは自己申告名のみのため確実な本人照合ができない。この点はDESIGN.mdの未解決論点として公開前に保持方針を確定する。
+- 猶予期間は設けない。DESIGN.md「保存の制約とトランザクション境界」に従って削除要求(`account_deletions`行)を先に記録し、通常API・プロフィール再作成・新しいチケット発行を即時拒否する。
+- Cognito削除、D1の本人履歴・リプレイ・設定・usersの削除を段階記録する。失敗時はCronで再試行し(DESIGN.md「インフラ」の定期実行②)、Cognitoの既削除は成功扱いとする。D1の削除はbatchで行う。
+- **D1 batchの順序は固定で①→②→③とする**。`battle_results.opponent_id`はON DELETE SET NULLのため、`users`を先に削除すると相手行の`opponent_id`がnull化され、**匿名化すべき行を特定できなくなる**。必ず匿名化を先に実行する。
+
+  | # | 文 | 内容 |
+  |---|---|---|
+  | ① | `UPDATE battle_results SET opponent_label = '退会済みプレイヤー', opponent_id = NULL WHERE opponent_id = ?userId` | 相手の履歴に残る本人の表示名を匿名化する。**必ず最初に実行する** |
+  | ② | `DELETE FROM replays WHERE battle_result_id IN (SELECT id FROM battle_results WHERE player_id = ?userId)` / `DELETE FROM battle_results WHERE player_id = ?userId` / `DELETE FROM account_settings WHERE user_id = ?userId` | 本人のリプレイ参照・履歴・設定を削除する(FKのCASCADEに依存せず明示的に削除し、削除順を決定的にする) |
+  | ③ | `DELETE FROM users WHERE id = ?userId` | 本人行を削除する。`account_deletions`はFKを持たないため残り、再試行と旧JWT失効判定に使う |
+
+  ②で最後の`replays`参照が消える`room_id`だけ、同じbatchで`replay_uploads`を`discarded`にし共有チャンクを削除する(下記「退会で最後の参照が…」参照)。
+- 他人の履歴内の本人参照はnullにし、opponent_labelは「退会済みプレイヤー」に置き換える(①)。通報(`reports`)は現行スキーマでは自己申告名のみのため確実な本人照合ができず、**MVPでは退会時にも削除しない**(DESIGN.md横断規約「データ保持期間」)。この点はDESIGN.mdの未解決論点として公開前に保持方針を確定する。
 - 202の場合は「退会を受け付けました。削除処理中です」と表示してローカルの認証情報を破棄する。失敗を削除完了とは表示しない。重複要求で削除ジョブを増やさない。
 
 ## 実装の配置
@@ -64,7 +73,8 @@ Cognito確認コード検証(ConfirmSignUp)成功後にフロントエンドが�
 | --- | --- | --- |
 | アカウント作成(users INSERT) | adapter/domain | `src/server/modules/account/adapter/provision.ts`, `src/server/modules/account/domain/provisionAccount.ts` |
 | 設定取得・更新(account_settings SELECT/UPSERT、部分更新マージロジック) | adapter/domain | `src/server/modules/account/adapter/settings.ts`, `src/server/modules/account/domain/mergeSettings.ts` |
-| 退会(users/battle_results/replays/account_settings DELETE、Cognito AdminDeleteUser呼び出し) | adapter | `src/server/modules/account/adapter/deleteAccount.ts`(D1操作とCognito管理APIの呼び出しを含むため、純粋domainには分離しない) |
+| 退会(account_deletions記録、相手履歴の匿名化→本人replays/battle_results/account_settings→users DELETEの固定順batch、Cognito AdminDeleteUser呼び出し) | adapter | `src/server/modules/account/adapter/deleteAccount.ts`(D1操作とCognito管理APIの呼び出しを含むため、純粋domainには分離しない) |
+| 退会の再試行(Cron Triggers。`account_deletions.retry_at`が到来した行の未完了段階を再実行する) | adapter | `src/server/modules/account/adapter/retryAccountDeletions.ts`(DESIGN.md「インフラ」の定期実行②) |
 | 新規登録フォーム・規約同意チェック | front | `src/front/pages/Signup.tsx` |
 | ログインフォーム・next復帰 | front | `src/front/pages/Login.tsx`, `src/front/components/RequireAuth.tsx`(セットアップissueでテンプレートに実在するか確認する。無ければ新規作成) |
 | アカウント設定画面・退会確認モーダル | front | `src/front/pages/AccountSettings.tsx` |
@@ -79,7 +89,7 @@ Cognito確認コード検証(ConfirmSignUp)成功後にフロントエンドが�
 
 ## テスト方針
 
-- 単体: `provisionAccount`(冪等性)、`deleteAccount`(関連テーブルの削除、opponent_idのnull化)、`account_settings`の部分更新マージロジック
+- 単体: `provisionAccount`(冪等性)、`deleteAccount`(関連テーブルの削除、opponent_idのnull化、**匿名化UPDATEがusers削除より前に実行されること**)、`account_settings`の部分更新マージロジック
 - 結合: `PATCH /api/account/settings`の認証ガード(未認証401)、`DELETE /api/account`後に`GET /api/me`的な情報取得が失敗すること
 - E2E(golden path): 新規登録 → チュートリアル表示 → ログアウト → ログイン → アカウント設定でキー割当変更 → 退会確認モーダルで確定 → トップに戻る、の一連
 

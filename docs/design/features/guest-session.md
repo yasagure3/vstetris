@@ -17,6 +17,8 @@
 
 UI_SKETCH.html「Home」画面のゲスト入力モーダルに対応。ニックネームのNGワード判定はDESIGN.md「横断規約」の`POST /api/ws-tickets`で行う(本機能はゲストの識別Cookie発行のみを担当する)。
 
+入力されたゲスト名は**sessionStorage(キー`vstetris.guestName`)**にだけ保持する。localStorageに置かないのはUC-003 BR-002(ニックネームは次回訪問時に引き継がれない)のため。チュートリアル(features/tutorial.md)・マッチメイキング(features/matchmaking.md)はこの値を読むだけで、`POST /api/ws-tickets`へ渡す`displayName`の出所とする。
+
 ## API
 
 DESIGN.md「API一覧」参照。

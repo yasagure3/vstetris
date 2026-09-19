@@ -33,20 +33,22 @@ UI_SKETCH.html「SpectateList」「Spectate」画面に対応。
 ### GET /api/rooms/active
 - 認証: 不要
 - レスポンス(200): `{ "matches": [{ "roomId": string, "status": "waiting"|"in_progress", "players": string[], "spectatorCount": number, "startedAt": string|null, "createdAt": string }] }`。`players`は接続中プレイヤーの`displayName`配列(内部ID・`playerRef.id`は公開しない)。`startedAt`は2名が揃った対戦開始時刻(ISO8601)、waitingではnull。createdAtはDO初期化時刻
-- `status`の意味: `waiting`は初期化済み・未開始(0〜1名接続)(features/battle.md「BattleRoomの状態」参照)、`in_progress`は2名揃い対戦中
-- **公開範囲**: DOに記録したsource=randomは`waiting`/`in_progress`とも一覧に含める。source=privateは**`in_progress`になるまで一覧に含めない**(DESIGN.md横断規約「Workers KVのキー空間」参照。ルームIDを知る者だけが入室できる前提を、一覧での早期露出によって崩さないため)
-- データソース: DESIGN.md「アーキテクチャと技術選定」のKVレジストリ(`match:<roomId>`)。書き込みタイミングの正本はDESIGN.md横断規約「Workers KVのキー空間」(このファイルでは繰り返さない)
+- `status`の意味: `waiting`は初期化済み・未開始(0〜1名接続)(features/battle.md「BattleRoomの状態機械」参照)、`in_progress`は2名揃い対戦中
+- **公開範囲**: DOに記録したsource=randomは`waiting`/`in_progress`とも一覧に含める。source=privateは**`in_progress`になるまで一覧に含めない**。この除外は**書き側(DOのKV更新)で行う**ため、privateの`waiting`はそもそもKVに存在せず、読み側(`activeRooms.ts`)には除外ロジックを置かない(正本はDESIGN.md横断規約「Workers KVのキー空間」。ルームIDを知る者だけが入室できる前提を、一覧での早期露出によって崩さないため)
+- データソース: DESIGN.md横断規約「Workers KVのキー空間」で定義した`match:<roomId>`の**metadata JSON**(`{status, players, spectatorCount, startedAt, createdAt, source}`)。`list({ prefix: "match:" })`の**metadataだけ**でレスポンスを構成し、個別キーの`get`は行わない(KVの`list()`は値本体を返さないため)。`source`はmetadataには含まれるがレスポンスには出さない
+- **返却上限**: 100件。超過分は`createdAt`の新しい順に残して切り捨てる(正本はDESIGN.md横断規約「Workers KVのキー空間」)
+- **`waiting`行の表示規則**: `startedAt`がnullのため経過時間は表示せず、代わりに「開始待ち」と表示する。`players`が0件の場合はプレイヤー名欄に「対戦者を待っています」と表示する
 
 ### WS /ws/rooms/:roomId?role=spectator の追加メッセージ(features/battle.mdの共通部分を除く)
-- クライアント→サーバ: `{ "type": "reaction", "emoji": string }`(**観戦者(`role=spectator`)のみ送信可能**。対戦者(`role=player`)からの`reaction`はfeatures/battle.mdのクライアント→サーバ一覧に含まれておらず、送っても無視される)
+- クライアント→サーバ: `{ "type": "reaction", "emoji": string }`(**観戦者(`role=spectator`)のみ送信可能**。features/battle.md「WebSocketメッセージ一覧(正本)」にも参照として1行載せてあり、対戦者(`role=player`)から送られた場合は無視する)
 - サーバ→クライアント: `{ "type": "reaction", "emoji": string, "from": "spectator" }`(対戦者・観戦者を含む全接続者へブロードキャストする。送信元は観戦者のみのため`from`は固定値。対戦のプレイ妨害を避けるため、対戦者クライアントのUIはリアクションを画面端に小さく表示するに留める)、制限超過時は送信者のみに`{ "type": "error", "code": "REACTION_RATE_LIMITED", "message": "少し待ってから送ってください" }`(DESIGN.md横断規約「WebSocketエラー応答形式」準拠)
 
 ## 実装の配置
 
 | 処理 | 層 | 実装先ファイル |
 | --- | --- | --- |
-| 進行中対戦一覧の取得(KV読み出し、privateの`waiting`除外ロジックを含む) | adapter | `src/server/modules/spectate/adapter/activeRooms.ts` |
-| KVレジストリ(`match:<roomId>`)の読み書き関数(Honoルートではなく純粋なKVアクセス関数) | adapter | `src/server/modules/spectate/adapter/matchRegistry.ts`(features/battle.mdのBattleRoom DOから呼ばれる) |
+| 進行中対戦一覧の取得(KVの`list({prefix:"match:"})`とmetadataの整形、100件への切り詰め。**privateの`waiting`除外は書き側で済んでいるため読み側では行わない**) | adapter | `src/server/modules/spectate/adapter/activeRooms.ts` |
+| KVレジストリ(`match:<roomId>`)の読み書き関数(Honoルートではなく純粋なKVアクセス関数。metadataの組み立て・TTL・集約更新・**privateの`waiting`を書かない判定**もここ) | adapter | `src/server/modules/spectate/adapter/matchRegistry.ts`(features/battle.mdのBattleRoom DOから呼ばれる) |
 | リアクションのレート制限・ブロードキャスト | DO | `src/server/battle/battleRoom.ts`(features/battle.mdと共通のDOに追加) |
 | 通報導線(「通報する」→ReportModal) | front | `src/front/pages/Spectate.tsx`(features/report.md参照) |
 | 観戦一覧・観戦画面・リアクションUI・「観戦をやめる」導線 | front | `src/front/pages/SpectateList.tsx`, `src/front/pages/Spectate.tsx` |

@@ -12,10 +12,16 @@
 | 操作 | 画面に起きること |
 |---|---|
 | トップで「遊び方を見る」を選ぶ、または未読の新規登録直後 | チュートリアル画面表示。**表示された時点で既読フラグをlocalStorageに保存する**(以後は強制再表示しない) |
-| 内容を確認し「対戦を始める」 | 登録プロフィールまたは有効なゲストセッションと今回入力した名前があればチケット取得後マッチメイキング画面(UC-004)へ遷移。それ以外はHomeのゲスト入力・セッション発行(UC-003)を経由する |
+| 内容を確認し「対戦を始める」 | 登録プロフィールがある、または有効なゲストセッションと**今回のブラウザセッションで入力済みのゲスト名**(sessionStorage、キー`vstetris.guestName`)がある場合はマッチメイキング画面(UC-004)へ遷移する。それ以外はHomeのゲスト入力・セッション発行(UC-003)を経由する。**チケット取得(`POST /api/ws-tickets`)はチュートリアル側では行わず、遷移先のMatchmaking画面(`src/front/pages/Matchmaking.tsx`、features/matchmaking.md)の責務とする**(重複実装を避けるため) |
 | 読まずに離脱(UC-011代替フローA) | 特別な処理なし。既読フラグは表示時点で既に保存済みのため、次回以降は強制再表示しない |
 
 UI_SKETCH.html「Tutorial」画面に対応。
+
+チュートリアルが表示するキー割当は**既定割当のみ**で、アカウント設定・localStorageのカスタム割当は反映しない(説明用の固定表示とする。UC-004代替Cのカスタム割当はfeatures/battle.mdの対戦画面側で適用する)。
+
+### ゲスト名の扱い(UC-003 BR-002との整合)
+
+ゲスト名は「次回訪問時に引き継がれない」(UC-003 BR-002)。したがって**localStorageではなくsessionStorage(キー`vstetris.guestName`)に保持**し、Homeのゲスト入力(features/guest-session.md)で入力された時点で書き込む。チュートリアルはこの値を読むだけで、書き換えない。既読フラグ(`vstetris.tutorialSeen`、localStorage)とは保存先が異なる。
 
 ## API
 
@@ -27,6 +33,7 @@ UI_SKETCH.html「Tutorial」画面に対応。
 | --- | --- | --- |
 | チュートリアル画面本体 | front | `src/front/pages/Tutorial.tsx` |
 | 既読フラグの読み書き(localStorage、キー`vstetris.tutorialSeen`) | front | `src/front/lib/tutorialSeen.ts` |
+| ゲスト名の読み書き(sessionStorage、キー`vstetris.guestName`。書き込みはHome側、チュートリアルは読み取りのみ) | front | `src/front/lib/guestName.ts`(`src/front/pages/Home.tsx`と共用) |
 
 ## エッジケースの決定
 
