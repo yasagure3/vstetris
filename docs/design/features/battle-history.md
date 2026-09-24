@@ -12,8 +12,8 @@
 
 | 操作 | 画面に起きること |
 |---|---|
-| 対戦終了直後(`battle_end`受信済み) | features/battle.mdの`battle_end`メッセージの`summary[side]`(消去/送出ライン)と`summary.durationMs`(対戦時間)を結果画面に表示する(追加API呼び出し不要)。`side`は対戦開始時の`joined`メッセージ(features/battle.md)で受け取った値を結果画面まで保持して使う |
-| 対戦終了直後(`battle_end`未受信のまま結果画面に来た) | sessionStorageに保持した`resultReceipt`を`X-Room-Result-Receipt`に載せて`GET /api/rooms/:roomId/result`を呼ぶ。**202(未決着)は3秒間隔で最大10回ポーリング**、200なら通常どおり結果を表示、**404は「結果を取得できませんでした」を表示してトップへ戻す**(10回を超えても200にならない場合も同じ扱い)。receiptが無い場合はAPIを呼ばず同じ表示にする。数値と挙動の正本はfeatures/battle.md「終了結果の再取得」 |
+| 対戦終了直後(`battle_end`受信済み) | features/battle.mdの`battle_end`メッセージの`summary[side]`(消去/送出ライン)と`summary.durationMs`(対戦時間)を結果画面に表示する(追加API呼び出し不要)。`side`は対戦開始時の`joined`メッセージ(再接続した場合は`resume`)で受け取った値を結果画面まで保持して使う |
+| 対戦終了直後(`battle_end`未受信のまま結果画面に来た) | sessionStorageに保持した`resultReceipt`を`X-Room-Result-Receipt`に載せて`GET /api/rooms/:roomId/result`を呼ぶ。**202(未決着)は3秒間隔で最大10回ポーリング**、200なら通常どおり結果を表示、**404は「結果を取得できませんでした」を表示してトップへ戻す**(10回を超えても200にならない場合も同じ扱い)。receiptが無い場合はAPIを呼ばず同じ表示にする。**この回復経路では`joined`/`resume`のsideを保持できていない場合があるため、応答の`side`フィールドを使って`summary[side]`を選ぶ**。数値と挙動の正本はfeatures/battle.md「終了結果の再取得」 |
 | 結果画面で「通報する」を選ぶ | ReportModalを開き送信する(features/report.md参照) |
 | 登録プレイヤーが「履歴」を選ぶ | `GET /api/battle-results`で新しい順一覧を取得 |
 | ゲスト/未ログインが履歴ページへ | ログイン強制はせず「履歴は保存されません」の案内を表示(UC-007代替フローA) |
@@ -39,7 +39,7 @@ UI_SKETCH.html「Result」「History」「Replay」画面に対応。
 フロントはチャンクを順次読み、**シーク時はmanifestの`chunks`から対象時刻を含むチャンク(`startTMs <= tMs <= endTMs`)を取得し、そのチャンク内の指定時点以下の最後のsnapshotで各sideの盤面を復元する**。指定時点以下のsnapshotが無いsideは前方のチャンクを順に遡る。**取得済みチャンクはメモリに保持して再取得しない**。全ログを一つのHTTPレスポンスやD1行にまとめない。初期両盤面・おじゃま・自然落下を含む録画と再生の一致、チャンク境界とシーク、取得途中の期限切れを検証する。
 
 ### GET /api/rooms/:roomId/result
-`battle_end`を受け取れなかった結果画面の回復に使う。仕様・ポーリング値の正本はfeatures/battle.md「終了結果の再取得」(実装はbattle側の`src/server/modules/battle/adapter/roomResult.ts`)。本ファイルは呼び出し側(結果画面)の挙動だけを定める。
+`battle_end`を受け取れなかった結果画面の回復に使う。仕様・ポーリング値の正本はfeatures/battle.md「終了結果の再取得」(実装はbattle側の`src/server/modules/battle/adapter/roomResult.ts`)。本ファイルは呼び出し側(結果画面)の挙動だけを定める。応答(200)は `{ "side": "P1"|"P2", "winner": "P1"|"P2"|null, "reason": "normal"|"forfeit_timeout"|"draw_timeout", "summary": { "P1": {...}, "P2": {...}, "durationMs": number }, "endedAt": string }` で、`side`はreceiptから解決された呼び出し元自身の席。
 
 ## 実装の配置
 

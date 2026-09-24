@@ -14,13 +14,13 @@
 |---|---|
 | 「観戦する」を選ぶ | `GET /api/rooms/active`で進行中の対戦一覧を取得(ランダムマッチ・ルーム対戦を区別しない。ただし公開タイミングは経路により異なる。下記API節参照) |
 | 対戦が1件もない | 「観戦できる対戦はありません」を表示 |
-| 対戦を1つ選ぶ | `POST /api/ws-tickets`(`scope: "room"`, `role: "spectator"`, `roomId`を指定。匿名ならチケット取得自体を省略可)でチケット取得後、`/ws/rooms/:roomId?role=spectator&ticket=...`へ接続、両者の盤面をリアルタイム表示 |
+| 対戦を1つ選ぶ | **チケットは取得せず**`/ws/rooms/:roomId?role=spectator`へ直接接続し、両者の盤面をリアルタイム表示(ログイン済みかどうかを問わず観戦は常に匿名接続。`POST /api/ws-tickets`に`role: "spectator"`を指定すると400 `ROLE_NOT_SUPPORTED`) |
 | リアクション送信 | 観戦者・対戦者を含む全接続者に一時表示。5秒間に5回まで(スパム防止、下記確定値) |
 | 制限超過でリアクション拒否 | トーストで「少し待ってから送ってください」を表示 |
 | 「観戦をやめる」を選ぶ(対戦終了前) | WebSocket切断、観戦一覧へ戻る(観戦者数はKV上で自動的にデクリメントされる) |
 | 対戦終了 | `battle_end`受信 → 結果表示 → 観戦一覧に戻れる |
 | 観戦中に対戦が異常終了(通信断等) | 「対戦が中断されました」を表示してから一覧へ戻す |
-| 「通報する」を選ぶ | ReportModalを開き、`reporterLabel`(自分がチケット取得済みならクライアントが保持する自分の`displayName`、匿名観戦なら固定値`"観戦者"`。いずれもサーバ側の観戦者識別とは独立したクライアント側の自己申告値)・`targetLabel`・`roomId`を渡して送信する(features/report.md参照) |
+| 「通報する」を選ぶ | ReportModalを開き、`reporterLabel`(観戦者は常に固定値`"観戦者"`。観戦接続はチケットを使わず表示名を持たないため)・`targetLabel`(`battle_start`/`joined`で得た対戦者の`displayName`)・`roomId`を渡して送信する(features/report.md参照) |
 
 UI_SKETCH.html「SpectateList」「Spectate」画面に対応。
 
@@ -36,7 +36,7 @@ UI_SKETCH.html「SpectateList」「Spectate」画面に対応。
 - `status`の意味: `waiting`は初期化済み・未開始(0〜1名接続)(features/battle.md「BattleRoomの状態機械」参照)、`in_progress`は2名揃い対戦中
 - **公開範囲**: DOに記録したsource=randomは`waiting`/`in_progress`とも一覧に含める。source=privateは**`in_progress`になるまで一覧に含めない**。この除外は**書き側(DOのKV更新)で行う**ため、privateの`waiting`はそもそもKVに存在せず、読み側(`activeRooms.ts`)には除外ロジックを置かない(正本はDESIGN.md横断規約「Workers KVのキー空間」。ルームIDを知る者だけが入室できる前提を、一覧での早期露出によって崩さないため)
 - データソース: DESIGN.md横断規約「Workers KVのキー空間」で定義した`match:<roomId>`の**metadata JSON**(`{status, players, spectatorCount, startedAt, createdAt, source}`)。`list({ prefix: "match:" })`の**metadataだけ**でレスポンスを構成し、個別キーの`get`は行わない(KVの`list()`は値本体を返さないため)。`source`はmetadataには含まれるがレスポンスには出さない
-- **返却上限**: 100件。超過分は`createdAt`の新しい順に残して切り捨てる(正本はDESIGN.md横断規約「Workers KVのキー空間」)
+- **列挙と並び順・返却上限**: KVの`list()`は**キー名の辞書順**で返り`createdAt`順ではないため、①`list_complete`まで`cursor`で辿って全metadataを取得(安全上限1000キー) → ②`createdAt`降順にソート → ③先頭100件に切る、の順で構成する(正本はDESIGN.md横断規約「Workers KVのキー空間」)
 - **`waiting`行の表示規則**: `startedAt`がnullのため経過時間は表示せず、代わりに「開始待ち」と表示する。`players`が0件の場合はプレイヤー名欄に「対戦者を待っています」と表示する
 
 ### WS /ws/rooms/:roomId?role=spectator の追加メッセージ(features/battle.mdの共通部分を除く)
@@ -47,7 +47,7 @@ UI_SKETCH.html「SpectateList」「Spectate」画面に対応。
 
 | 処理 | 層 | 実装先ファイル |
 | --- | --- | --- |
-| 進行中対戦一覧の取得(KVの`list({prefix:"match:"})`とmetadataの整形、100件への切り詰め。**privateの`waiting`除外は書き側で済んでいるため読み側では行わない**) | adapter | `src/server/modules/spectate/adapter/activeRooms.ts` |
+| 進行中対戦一覧の取得(KVの`list({prefix:"match:"})`をcursorで完走させ、metadataの整形・`createdAt`降順ソート・100件への切り詰め。**privateの`waiting`除外は書き側で済んでいるため読み側では行わない**) | adapter | `src/server/modules/spectate/adapter/activeRooms.ts` |
 | KVレジストリ(`match:<roomId>`)の読み書き関数(Honoルートではなく純粋なKVアクセス関数。metadataの組み立て・TTL・集約更新・**privateの`waiting`を書かない判定**もここ) | adapter | `src/server/modules/spectate/adapter/matchRegistry.ts`(features/battle.mdのBattleRoom DOから呼ばれる) |
 | リアクションのレート制限・ブロードキャスト | DO | `src/server/battle/battleRoom.ts`(features/battle.mdと共通のDOに追加) |
 | 通報導線(「通報する」→ReportModal) | front | `src/front/pages/Spectate.tsx`(features/report.md参照) |
@@ -73,4 +73,4 @@ KVの結果整合性により新しい対戦がすぐ表示されない、終了
 
 結合試験にはKVが古い状態／キー欠落／更新失敗を返すケース、終了後のcloseイベント、再起動後のfinished復元を含める。
 
-接続前の一覧は候補のみであり、private waiting／未初期化／終了済みのDOは観戦不可。チケットを取得する場合はrole:spectatorを明記する。匿名接続のupgrade失敗ではHTTP状態をブラウザーから取得できないため「接続できません。対戦が終了した可能性があります」と表示し一覧へ戻す。観戦者への通報用表示名は従来どおり固定値「観戦者」。録画はbattle.mdの盤面スナップショット契約に従う。
+接続前の一覧は候補のみであり、private waiting／未初期化／終了済み(`finished`)のDOは観戦不可でWebSocketアップグレードを404で拒否する(features/battle.md「API」)。**観戦はチケットを使わない**ため、これらの失敗はWebSocket接続の失敗としてのみ現れる。upgrade失敗のHTTP状態をブラウザーから取得できないため「接続できません。対戦が終了した可能性があります」と表示し一覧へ戻す。観戦者への通報用表示名は常に固定値「観戦者」。録画はbattle.mdの盤面スナップショット契約に従う。

@@ -46,6 +46,7 @@ Cognito確認コード検証(ConfirmSignUp)成功後にフロントエンドが�
 - features/battle.mdが対戦開始時に呼ぶほか、アカウント設定画面の初期表示にも使う
 
 ### PATCH /api/account/settings
+- **MVPスコープの注記**: US-025はCould(あると嬉しい)のため、**MVPではこのAPIとゲスト向けlocalStorage(`vstetris.guestAccessibility`、features/battle.md)による保存機構と、対戦開始時の読み込み・適用までを実装する。キー割当を変更する設定UIは後続フェーズ**とする(UC-004代替C参照)。色覚サポートの切替は対戦画面のトグル(features/battle.md)としてMVPに含める
 - リクエスト: `{ "colorSupportDefault"?: boolean, "keyBindings"?: { "moveLeft": string, "moveRight": string, "rotate": string, "softDrop": string, "hardDrop": string, "hold": string } }`(部分更新)
 - レスポンス(200): 更新後の設定全体
 - エラー: 不正なキー値(空文字・重複割当) → 400 `INVALID_KEY_BINDING`
@@ -54,16 +55,61 @@ Cognito確認コード検証(ConfirmSignUp)成功後にフロントエンドが�
 - 認証: 登録プレイヤー本人。確認モーダルで確定後に実行。
 - レスポンス: 両ストアで削除完了なら204。削除要求を永続化できたが処理中なら202 `{ "status": "deleting" }`。要求記録自体が失敗した場合503 `ACCOUNT_DELETE_UNAVAILABLE`。
 - 猶予期間は設けない。DESIGN.md「保存の制約とトランザクション境界」に従って削除要求(`account_deletions`行)を先に記録し、通常API・プロフィール再作成・新しいチケット発行を即時拒否する。
-- Cognito削除、D1の本人履歴・リプレイ・設定・usersの削除を段階記録する。失敗時はCronで再試行し(DESIGN.md「インフラ」の定期実行②)、Cognitoの既削除は成功扱いとする。D1の削除はbatchで行う。
-- **D1 batchの順序は固定で①→②→③とする**。`battle_results.opponent_id`はON DELETE SET NULLのため、`users`を先に削除すると相手行の`opponent_id`がnull化され、**匿名化すべき行を特定できなくなる**。必ず匿名化を先に実行する。
+- Cognito削除、D1の本人履歴・リプレイ・設定・usersの削除を`account_deletions.phase`に段階記録する。失敗時はCronで再試行し(DESIGN.md「インフラ」の定期実行②、`*/15 * * * *`)、Cognitoの既削除は成功扱いとする。D1の削除はbatchで行う。
+
+  | `phase` | 意味 | 次にCron②が行うこと |
+  |---|---|---|
+  | `requested` | 削除要求を記録した直後。通常API・provision・チケット発行は既に403 `ACCOUNT_DELETING`で拒否している | CognitoのAdminDeleteUserを呼ぶ。成功、または`UserNotFoundException`(既削除)なら`cognito_deleted`へ |
+  | `cognito_deleted` | Cognito側の削除が完了 | 下記の固定順D1 batchを実行する。成功なら`d1_deleted`へ |
+  | `d1_deleted` | D1側の削除が完了 | `phase='completed'`、`retry_at = 完了時刻 + 60分`を書く |
+  | `completed` | 両ストアの削除が完了。旧JWTの失効判定のためだけに行が残っている | `retry_at`が到来したら`account_deletions`の行自体を削除する |
+
+  `retry_at`は失敗時に指数バックオフで先送りする。`last_error_code`に直近の失敗理由を残す。`completed`の`retry_at`に足す**60分はCognito app clientのアクセストークン有効期限**であり、セットアップissueでTerraform/IaCに60分固定として明示する(DESIGN.md「セットアップissue完了後に確定する手順」)。この期間は、署名だけ有効な旧JWTが提示されても`account_deletions`行の存在により拒否できる。
+- **D1 batchは固定順・固定文数**とする。順序の根拠は2つある。(a)`battle_results.opponent_id`はON DELETE SET NULLのため、`users`を先に削除すると相手行の`opponent_id`がnull化され**匿名化すべき行を特定できなくなる**。(b)共有チャンクの削除対象`room_id`は本人の`replays`行からしか辿れないため、**`replays`を削除する前**に②-a/②-bを実行しなければ`room_id`が特定不能になる。
+
+  以下のSQLの`?name`は可読性のための表記で、実装では**出現順の位置指定`?`に展開**し同じ値も都度バインドする(SQLiteの名前付きパラメータは`:name`/`@name`/`$name`。`?name`は`WHERE`等では構文エラーだが、SELECT句内では`? AS name`として黙って受理されるため、展開を省略しない。features/battle.md「確定batchの固定SQL文列」の記法注記と同じ)。
 
   | # | 文 | 内容 |
   |---|---|---|
   | ① | `UPDATE battle_results SET opponent_label = '退会済みプレイヤー', opponent_id = NULL WHERE opponent_id = ?userId` | 相手の履歴に残る本人の表示名を匿名化する。**必ず最初に実行する** |
-  | ② | `DELETE FROM replays WHERE battle_result_id IN (SELECT id FROM battle_results WHERE player_id = ?userId)` / `DELETE FROM battle_results WHERE player_id = ?userId` / `DELETE FROM account_settings WHERE user_id = ?userId` | 本人のリプレイ参照・履歴・設定を削除する(FKのCASCADEに依存せず明示的に削除し、削除順を決定的にする) |
+  | ②-a | 下記 | 本人の`replays`が指す`room_id`のうち、**他の`player_id`の`replays`参照が無い**ものの`replay_chunks`を削除する。**`replays`削除より前** |
+  | ②-b | 下記 | 同じ条件の`replay_uploads`を`discarded`にする(遅延PUTによる再生成を防ぐ)。**`replays`削除より前** |
+  | ②-c | `DELETE FROM replays WHERE battle_result_id IN (SELECT id FROM battle_results WHERE player_id = ?userId)` / `DELETE FROM battle_results WHERE player_id = ?userId` / `DELETE FROM account_settings WHERE user_id = ?userId` | 本人のリプレイ参照・履歴・設定を削除する(FKのCASCADEに依存せず明示的に削除し、削除順を決定的にする) |
   | ③ | `DELETE FROM users WHERE id = ?userId` | 本人行を削除する。`account_deletions`はFKを持たないため残り、再試行と旧JWT失効判定に使う |
 
-  ②で最後の`replays`参照が消える`room_id`だけ、同じbatchで`replay_uploads`を`discarded`にし共有チャンクを削除する(下記「退会で最後の参照が…」参照)。
+  ②-a(共有チャンクの削除):
+
+  ```sql
+  DELETE FROM replay_chunks
+  WHERE room_id IN (
+    SELECT r.room_id FROM replays r
+    JOIN battle_results br ON br.id = r.battle_result_id
+    WHERE br.player_id = ?userId
+      AND NOT EXISTS (
+        SELECT 1 FROM replays r2
+        JOIN battle_results br2 ON br2.id = r2.battle_result_id
+        WHERE r2.room_id = r.room_id AND br2.player_id <> ?userId
+      )
+  );
+  ```
+
+  ②-b(`replay_uploads`のdiscarded化。②-aと同じ副問い合わせを使う):
+
+  ```sql
+  UPDATE replay_uploads SET status = 'discarded'
+  WHERE room_id IN (
+    SELECT r.room_id FROM replays r
+    JOIN battle_results br ON br.id = r.battle_result_id
+    WHERE br.player_id = ?userId
+      AND NOT EXISTS (
+        SELECT 1 FROM replays r2
+        JOIN battle_results br2 ON br2.id = r2.battle_result_id
+        WHERE r2.room_id = r.room_id AND br2.player_id <> ?userId
+      )
+  );
+  ```
+
+  相手も登録者でその`replays`行が残っている`room_id`は`NOT EXISTS`で除外されるため、チャンクは削除されず相手のリプレイは再生できる。未完了の`staging`を「参照0件」という理由で全件掃除することはしない(期限での削除はCron①に任せる)。
 - 他人の履歴内の本人参照はnullにし、opponent_labelは「退会済みプレイヤー」に置き換える(①)。通報(`reports`)は現行スキーマでは自己申告名のみのため確実な本人照合ができず、**MVPでは退会時にも削除しない**(DESIGN.md横断規約「データ保持期間」)。この点はDESIGN.mdの未解決論点として公開前に保持方針を確定する。
 - 202の場合は「退会を受け付けました。削除処理中です」と表示してローカルの認証情報を破棄する。失敗を削除完了とは表示しない。重複要求で削除ジョブを増やさない。
 
@@ -100,4 +146,4 @@ Cognito登録後のニックネーム拒否、D1障害、provision応答消失�
 
 ForgotPasswordの成功とアカウント不在は、共通の「登録されている場合は確認コードを送信しました」を表示する。確認コード誤り・期限切れは再入力／再送を案内する。provisionの400・503・応答消失後の復旧、未登録メールでの共通表示を結合／E2E試験に含める。
 
-退会で最後のreplays参照が消えるroom_idだけ、同じD1 batchでreplay_uploadsをdiscardedにして共有チャンクを削除する。未完了stagingを参照0件という理由で全件掃除しない。遅延結果との競合はbattle.md「保存と退会の競合」に従う。
+退会で最後のreplays参照が消えるroom_idだけ、同じD1 batchでreplay_uploadsをdiscardedにして共有チャンクを削除する(上記②-a/②-b。**replays削除より前**に実行する)。未完了stagingを参照0件という理由で全件掃除しない。遅延結果との競合はbattle.md「保存と退会の競合」に従う。

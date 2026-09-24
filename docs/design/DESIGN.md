@@ -101,7 +101,7 @@ PoC-2ではdevサーバーの5174番ポートへの実HTTP疎通も報告済み�
 1. 既存docsを保持して指定テンプレートを導入し、完全SHA・Node・パッケージマネージャのバージョンを固定する。
 2. 新規worktreeで依存をlockfileから導入し、サンプル環境変数からローカル設定を作る。必要な秘密値は別途注入し、コミットしない。
 3. Docker/Terraformを用意し、テンプレートの `docker compose up -d` と `vp run cognito:setup` を検証する。Cognito成功トークンによるAPI 200とゲストによる401を両方確認する。
-4. ローカルCognito(moto)に管理者グループ`admins`と、そのグループに所属する管理者ユーザーを作る(横断規約「運営者権限」。`GET /api/reports`の403/200を試験できるようにする)。
+4. ローカルCognito(moto)に管理者グループ`admins`と、そのグループに所属する管理者ユーザーを作る(横断規約「運営者権限」。`GET /api/reports`の403/200を試験できるようにする)。あわせて**Cognito app clientのアクセストークン有効期限を60分に固定**する(Terraform/IaCで明示。退会時の失効記録の保持期間がこの値に依存するため。「データスキーマ」の`account_deletions`参照)。
 5. D1の初期化・既存状態からの差分適用を検証する。dev / migrations / execute は同じworktree専用persist-toを使う。
 6. 外部指定ポートで起動し、占有時は失敗する設定を確定する。Playwrightは `reuseExistingServer: false` とし、別worktreeのサーバーを使わない。Wrangler registryと永続化先も分離する。
 7. Playwright導入・ブラウザーインストール・起動・実行コマンドを実測して本節へ記載する。2ブラウザー対戦＋別ブラウザー観戦を必須経路とする。
@@ -118,14 +118,14 @@ Cloudflare D1 + Drizzle ORM。認証はCognitoが担うため、パスワード�
 |---|---|---|
 | `users` | `id`(text, PK, Cognito sub) / `nickname`(text) / `terms_agreed_at`(text) / `created_at`(text) | 登録プレイヤーのアプリ内プロフィール。Cognitoのuser poolとは`id`(sub)で対応。退会は物理削除のため論理削除用カラムは持たない |
 | `account_settings` | `user_id`(text, PK/FK→users.id, ON DELETE CASCADE) / `color_support_default`(integer, boolean) / `key_bindings`(text, JSON) / `updated_at`(text) | US-025(アクセシビリティ)の個人設定 |
-| `battle_results` | `id`(text, PK, ULID) / `room_id`(text) / `player_id`(text, FK→users.id, ON DELETE CASCADE) / `opponent_id`(text, FK→users.id, nullable, ON DELETE SET NULL) / `opponent_label`(text) / `side`(text: P1/P2, NOT NULL) / `result`(text: win/lose/draw) / `lines_cleared`(integer) / `lines_sent`(integer) / `duration_ms`(integer) / `ended_reason`(text: normal/forfeit_timeout/draw_timeout) / `created_at`(text) | 登録プレイヤー視点で1行/対戦。相手がゲストの場合`opponent_id`はnull(BR-004: ゲストの対戦結果はそもそも作成しない)。`player_id`本人が退会すると行ごと削除(CASCADE)、相手(`opponent_id`)が退会した場合はその参照だけnull化し行は残す(`opponent_label`は「退会済みプレイヤー」に置換する)。`side`はBattleRoom DOが予約時に固定した席で、リプレイ再生時に「本人の盤面」を判定するために使う(UC-007)。UC-004ステップ11、UC-007に対応 |
+| `battle_results` | `id`(text, PK, ULID) / `room_id`(text) / `player_id`(text, FK→users.id, ON DELETE CASCADE) / `opponent_id`(text, FK→users.id, nullable, ON DELETE SET NULL) / `opponent_label`(text) / `side`(text: P1/P2, NOT NULL) / `result`(text: win/lose/draw) / `lines_cleared`(integer) / `lines_sent`(integer) / `duration_ms`(integer) / `ended_reason`(text: normal/forfeit_timeout/draw_timeout) / `created_at`(text) / **UNIQUE(`room_id`, `player_id`)** | 登録プレイヤー視点で1行/対戦。UNIQUE制約により結果の再送で二重戦績にならない(再戦は新しい`room_id`を使う)。相手がゲストの場合`opponent_id`はnull(BR-004: ゲストの対戦結果はそもそも作成しない)。`player_id`本人が退会すると行ごと削除(CASCADE)、相手(`opponent_id`)が退会した場合はその参照だけnull化し行は残す(`opponent_label`は「退会済みプレイヤー」に置換する)。`side`はBattleRoom DOが予約時に固定した席で、リプレイ再生時に「本人の盤面」を判定するために使う(UC-007)。UC-004ステップ11、UC-007に対応 |
 | `replays` | `id`(text, PK) / `battle_result_id`(text, FK→battle_results.id, ON DELETE CASCADE, UNIQUE) / `room_id`(text) / `version`(integer) / `chunk_count`(integer) / `chunks`(text, JSON配列`[{index,startTMs,endTMs}]`。シーク用の時刻索引) / `started_at`(text) / `ended_at`(text) / `created_at`(text) / `expires_at`(text) | UC-007のリプレイ。保存期間30日(既定値、下記「横断規約」参照)。期限切れレコードは定期実行(Cron Triggers)で削除する。`battle_results`行が削除(退会等)されると連動して削除される。1試合で登録者が2名なら`battle_results`行ごとに1件ずつ、同じ`room_id`を指す`replays`行が2行できる(実体のチャンクは`replay_chunks`側で共有する) |
 | `replay_chunks` | `room_id`(text, PK複合) / `chunk_index`(integer, PK複合) / `data`(text, UTF-8で最大256KiB) / `hash`(text, SHA-256小文字hex) / `expires_at`(text) | version1イベント配列のJSON文字列チャンク。PRIMARY KEY(`room_id`, `chunk_index`)。**FKは張らず`room_id`で`replays`と対応付ける**(同じroom_idのチャンク列を最大2行の`replays`が共有するため、単一行へのFKにできない)。各チャンクは不変。削除はfeatures/battle.md「保存と退会の競合」と定期実行に従う |
 | `replay_uploads` | `room_id`(text, PK) / `status`(text: staging/finalized/discarded) / `ended_at`(text) / `expires_at`(text) | DOからのチャンク転送状態。**FKは持たない**(転送は`battle_results`作成前に始まるため)。状態遷移・削除条件はfeatures/battle.md「保存と退会の競合」「チャンクの型・確定・削除」を正本とする |
 | `reports` | `id`(text, PK, ULID) / `reporter_label`(text) / `target_label`(text) / `room_id`(text, nullable) / `reason`(text) / `detail`(text, nullable) / `created_at`(text) | UC-009/UC-010。通報者の身元確認は行わず`reporter_label`(自己申告の表示名)のみを記録する(`POST /api/reports`は認証不要ルートのため、認証済みユーザーIDとの紐付けは持たない。「自分の通報一覧」のような機能が必要になった場合に`reporter_id`列を追加検討する)。FKを持たないため退会時にも削除しない(「データ保持期間」参照) |
-| `account_deletions` | `user_id`(text, PK) / `phase`(text) / `requested_at`(text) / `retry_at`(text) / `last_error_code`(text, nullable) | 退会処理中の識別。**`users`へのFK・CASCADEは設定しない**(`users`行を削除した後も再試行のため行が残る必要があるため)。完了後は旧JWTの最大有効期限を過ぎた時点でこの失効記録も削除する |
+| `account_deletions` | `user_id`(text, PK) / `phase`(text: requested/cognito_deleted/d1_deleted/completed) / `requested_at`(text) / `retry_at`(text) / `last_error_code`(text, nullable) | 退会処理中の識別。**`users`へのFK・CASCADEは設定しない**(`users`行を削除した後も再試行のため行が残る必要があるため)。`phase`の遷移と再試行内容はfeatures/account.md「DELETE /api/account」を正本とする。完了後は旧JWTの最大有効期限(=Cognito app clientのアクセストークン有効期限、**60分**に固定する)を過ぎた時点でこの失効記録も削除する |
 
-**インデックス**: `battle_results(player_id, created_at, id)`(履歴の新しい順取得用)、`replays(expires_at)`(期限切れ削除用)、`replays(room_id)`(退会時に同一room_idの残存参照を数える用)、`replay_chunks(expires_at)`(期限切れ削除用)、`replay_uploads(expires_at)`(期限切れ削除用)、`account_deletions(retry_at)`(再試行対象の抽出用)、`reports(created_at, id)`(一覧の新しい順取得用。複合カーソルで同一時刻でも欠落・重複しないようにする)。
+**インデックス**: `battle_results(player_id, created_at, id)`(履歴の新しい順取得用)、`battle_results(room_id, player_id)`(**UNIQUE**。結果再送による二重戦績の防止。確定batchの`ON CONFLICT`が参照する)、`battle_results(room_id)`(退会・確定batchで同一対戦の行を数える用。UNIQUE索引の先頭列で代替できるなら省略可)、`replays(expires_at)`(期限切れ削除用)、`replays(room_id)`(退会時に同一room_idの残存参照を数える用)、`replay_chunks(expires_at)`(期限切れ削除用)、`replay_uploads(expires_at)`(期限切れ削除用)、`account_deletions(retry_at)`(再試行対象の抽出用)、`reports(created_at, id)`(一覧の新しい順取得用。複合カーソルで同一時刻でも欠落・重複しないようにする)。
 
 **マイグレーション方針**: drizzle-kitで生成し`wrangler d1 migrations apply`で適用する(テンプレート標準)。PoC-4で確認済みの通り、テンプレートの`migrations/0000_init.sql`は手書きでdrizzleのスナップショット(`migrations/meta/`)を持たないため、セットアップissueで最初にkv_example等の既存テーブルのみでベースラインスナップショットを作成してから、本設計のテーブルを追加すること(「既知の制約」参照)。
 
@@ -136,7 +136,7 @@ Cloudflare D1 + Drizzle ORM。認証はCognitoが担うため、パスワード�
 - `replay_chunks(room_id TEXT, chunk_index INTEGER, data TEXT, hash TEXT, expires_at TEXT, PRIMARY KEY(room_id, chunk_index))`を追加する。dataはUTF-8で最大256KiB。replaysはroom_idとversion/chunk_countを持つ本人用参照で、全ログを一行に格納しない。stagingは参照0件でも期限まで保持する。退会で最後の参照が消えるroom_idの削除と期限切れ削除はbattle.md「保存と退会の競合」に従う。
 - `replay_uploads(room_id TEXT PRIMARY KEY, status TEXT, ended_at TEXT, expires_at TEXT)`で転送状態を持つ。statusはstaging/finalized/discarded。結果公開・退会・遅延PUTの条件はbattle.md「保存と退会の競合」を正本とする。
 - `replays.battle_result_id` はUNIQUE。1試合で登録者が2名なら`battle_results`行2件それぞれに`replays`行を1件ずつ作り、同じ`room_id`と同じチャンク列を共有する。expires_atは対戦終了時刻＋30日とし、取得時に期限切れを拒否する。Cron遅延は閲覧期限を延ばさない。
-- 録画量の上限: 同一`side`につき250ms以内の連続`board_update`は間引いて記録する(`lock_applied`・`battle_end`境界のスナップショットは必ず記録する)。チャンク数の上限は40(約10MiB)とし、超過した時点で以降の録画を止め`replays`行を作らない(履歴のサマリーは通常どおり保存し、リプレイは「再生できません」と表示する)。正本はfeatures/battle.md「リプレイ」。
+- 録画量の上限: 同一`side`につき250ms以内の連続`board_update`は間引いて記録する(**対戦開始時の両盤面**・`lock_applied`直後・`battle_end`直前のスナップショットは間引かず必ず記録する)。チャンク数の上限は40(約10MiB)とし、超過した時点で以降の録画を止め`replays`行を作らない(**チャンクの転送も行わず、DO録画は終了時に破棄する**。履歴のサマリーは通常どおり保存し、リプレイは「再生できません」と表示する)。正本はfeatures/battle.md「リプレイ」。
 - 時刻はサーバーが発行するUTC ISO8601。数値は非負、result／ended_reasonは列挙値制約、必須列はNOT NULLとする。
 - 削除中の識別に `account_deletions(user_id TEXT PRIMARY KEY, phase TEXT, requested_at TEXT, retry_at TEXT, last_error_code TEXT)` を置く。usersへのCASCADEは設定しない。完了後は旧JWTの最大有効期限を過ぎた時点で最小限の失効記録も削除する。
 
@@ -144,7 +144,7 @@ Cloudflare D1 + Drizzle ORM。認証はCognitoが担うため、パスワード�
 |---|---|
 | 対戦終了 | DOで結果と未送信状態を永続化してからD1へ渡す。失敗はalarmで再試行。同じ対戦IDを再利用。終了通知の回復にはbattle.mdのresultReceiptを使い、DOは結果回復用サマリーとreceipt hashを終了後24時間だけ保持する。DO録画は転送成功／破棄時に削除し、未成功でも終了後30日で削除する |
 | 結果とリプレイ | チャンクを冪等に転送後、全件検証して登録者分のサマリーとreplays参照だけをD1原子的batchで確定。途中チャンクは非公開。各SQLの束縛変数100個以下を守り、一括巨大INSERTをしない。HTTP成功応答消失後の再送も冪等 |
-| 退会 | 最初に削除要求を記録してアクセスを停止。CognitoとD1は分散トランザクションにできないため段階を記録して再試行。D1のbatchは**①相手履歴の`opponent_label`匿名化UPDATE → ②本人の`replays`/履歴/設定の削除 → ③`users`削除**の固定順で実行する(`battle_results.opponent_id`はON DELETE SET NULLのため、`users`を先に消すと匿名化対象の行を特定できなくなる)。正本はfeatures/account.md「DELETE /api/account」 |
+| 退会 | 最初に削除要求を記録してアクセスを停止。CognitoとD1は分散トランザクションにできないため段階を記録して再試行。D1のbatchは**①相手履歴の`opponent_label`匿名化UPDATE → ②-a 共有チャンク削除 → ②-b `replay_uploads`のdiscarded化 → ②-c 本人の`replays`/`battle_results`/`account_settings`削除 → ③`users`削除**の固定順で実行する(`battle_results.opponent_id`はON DELETE SET NULLのため`users`を先に消すと匿名化対象の行を特定できなくなる。また②-a/②-bは**本人の`replays`を削除する前**に実行しないと対象`room_id`を特定できなくなる)。正本はfeatures/account.md「DELETE /api/account」 |
 | 期限切れ削除 | 小さいbatchを繰り返す。取得APIでの期限判定がアクセス制御の正本 |
 
 ゲスト同士の試合は履歴を作らない。登録者対ゲストは登録者の履歴のみ作り、ゲスト側の恒久的な履歴索引は持たない。退会中・退会済みユーザーへの遅延結果書き込みではプロフィールを再生成しない。
@@ -168,13 +168,13 @@ Cloudflare D1 + Drizzle ORM。認証はCognitoが担うため、パスワード�
 | GET | `/api/rooms/active` | 進行中の対戦一覧(観戦用、KVレジストリから取得) | 不要 | UC-006 |
 | GET | `/api/battle-results` | 対戦履歴一覧(新しい順)+通算成績 | 必須 | UC-007 |
 | GET | `/api/battle-results/:id/replay` | リプレイ取得 | 必須 | UC-007 |
-| POST | `/api/battle-results`(内部専用) | BattleRoomからservice binding経由で呼ばれる対戦結果・リプレイの永続化 | 内部シークレットヘッダ | UC-004, UC-007 |
+| POST | `/api/internal/battle-results` | BattleRoomからservice binding経由で呼ばれる対戦結果・リプレイの永続化(内部専用) | 内部シークレットヘッダ | UC-004, UC-007 |
 | GET | `/api/battle-results/:id/replay/chunks/:index` | 本人限定リプレイチャンク | 必須 | UC-007 |
 | PUT | `/api/internal/replays/:roomId/:chunkIndex` | DOからの冪等チャンク転送 | 内部シークレットヘッダ | UC-004, UC-007 |
 | POST | `/api/reports` | 通報の作成 | 不要(ゲスト可) | UC-009 |
 | GET | `/api/reports` | 通報一覧(運営者権限必須) | 必須+運営者権限 | UC-010 |
 | WS | `/ws/matchmake?ticket=<ticket>` | MatchmakingQueue DOへのWebSocketアップグレード | チケット(横断規約参照) | UC-004 |
-| WS | `/ws/rooms/:roomId?role=player\|spectator&ticket=<ticket>` | BattleRoom DOへのWebSocketアップグレード(spectatorはチケット省略可) | チケット(playerのみ必須) | UC-004, UC-005, UC-006 |
+| WS | `/ws/rooms/:roomId?role=player&ticket=<ticket>` / `/ws/rooms/:roomId?role=spectator` | BattleRoom DOへのWebSocketアップグレード(**観戦者はチケットを使わない**) | チケット(playerのみ) | UC-004, UC-005, UC-006 |
 
 個別のリクエスト/レスポンス詳細・WebSocketメッセージ形式は各 docs/design/features/ の「API」節を正本とする。
 
@@ -184,30 +184,31 @@ Cloudflare D1 + Drizzle ORM。認証はCognitoが担うため、パスワード�
 - **`playerRef`の型**: `{ "id": string, "kind": "registered"|"guest", "displayName": string }`。`id`は登録プレイヤーならCognito sub、ゲストなら`guest_id`(ULID)。この型はDESIGN.md全体・全featuresで共通のプレイヤー識別子として扱う
 - **WebSocket認証(チケット方式)**: `/ws/matchmake`・`/ws/rooms/:roomId`はJWTをURLに直接載せない(ログ残存対策)。接続前に`POST /api/ws-tickets`を呼び、**サーバが解決した`playerRef`を署名して埋め込んだ短命(60秒)・一回限りの署名付きチケット**を取得し、`?ticket=`で接続する。DO側は署名・有効期限・未使用であることを検証する(署名検証に加えてDO storageの消費済みjtiを照合し、検証と消費を直列化する)。これにより「クライアントが`playerRef`を自己申告してなりすます」問題を構造的に防ぐ
   - 認証: **任意認証**(`Authorization: Bearer`があれば`authenticate`相当の検証を行い`playerRef.kind="registered"`を解決、無ければ`guest_id` Cookieを見て`kind="guest"`を解決。どちらも無ければ401)。テンプレートの「認証必須/不要」2値では表現できないため、`optionalAuthenticate`ミドルウェアを新規追加する
-  - リクエスト: `{ "scope": "matchmake"|"room", "roomId"?: string, "role"?: "player"|"spectator", "displayName": string }`(`scope: "room"`のときは接続先の`roomId`を必ず指定し、チケットに埋め込む。`role`は省略時`player`。`role: "spectator"`のとき`displayName`は省略可で、送っても無視し表示は常に固定値`"観戦者"`とする。登録プレイヤーは`users.nickname`を優先しこの値は無視してもよい。ゲストは`role: "player"`のとき必須で、features/guest-session.mdと同じ`nicknameFilter`をここで適用する)
+  - リクエスト: `{ "scope": "matchmake"|"room", "roomId"?: string, "role"?: "player", "displayName"?: string }`(`scope: "room"`のときは接続先の`roomId`を必ず指定し、チケットに埋め込む。`role`は省略時`player`で、**チケットは`player`専用**。`role: "spectator"`を指定した場合は400 `ROLE_NOT_SUPPORTED`を返す(観戦者はチケットを使わずに接続する。features/spectate.md参照)。`displayName`はゲストのとき必須で、features/guest-session.mdと同じ`nicknameFilter`をここで適用する。登録プレイヤーは`users.nickname`を優先しこの値は無視してもよい)
   - レスポンス(201): `{ "ticket": string, "expiresAt": string }`
   - チケットの`expiresAt`は発行時刻＋60秒。ゲストの場合は `min(発行時刻+60秒, guest_id CookieのexpiresAt)` とし、ゲストセッションの期限を超えない(features/guest-session.md参照)
   - エラー一覧:
 
     | HTTPステータス | コード | 条件 |
     |---|---|---|
-    | 400 | `NICKNAME_REJECTED` / `NICKNAME_TOO_LONG` / `NICKNAME_REQUIRED` | ゲストの`displayName`がNGワード・21文字以上・空(`role: "player"`のみ判定する) |
+    | 400 | `NICKNAME_REJECTED` / `NICKNAME_TOO_LONG` / `NICKNAME_REQUIRED` | ゲストの`displayName`がNGワード・21文字以上・空(または欠落) |
     | 400 | `ROOM_ID_REQUIRED` | `scope: "room"`で`roomId`欠落 |
+    | 400 | `ROLE_NOT_SUPPORTED` | `role: "spectator"`を指定した(観戦者はチケットを使わない) |
     | 401 | `UNAUTHENTICATED` | JWTもゲストCookieも無い |
     | 401 | `GUEST_SESSION_EXPIRED` | `guest_id` Cookieの署名・用途が不正、または期限切れ(features/guest-session.md) |
     | 403 | `ACCOUNT_DELETING` | 削除要求が記録済みの登録プレイヤー(features/account.md。署名だけ有効な旧JWTを認可の根拠にしない) |
-    | 404 | `ROOM_NOT_FOUND` | 対象roomIdのDOが未初期化、`waiting`の入室期限切れ、または`finished`への`role=player`接続(features/battle.md「BattleRoomの状態機械」、features/room.md) |
+    | 404 | `ROOM_NOT_FOUND` | 対象roomIdのDOが未初期化、`waiting`の入室期限切れ、または`finished`への接続(features/battle.md「BattleRoomの状態機械」、features/room.md) |
     | 409 | `ROOM_FULL` | `role=player`の席が既に2つ埋まっている(features/room.md、UC-005 E1) |
     | 409 | `SEAT_NOT_ELIGIBLE` | 席不適合。予約された`playerRef`と一致しない、または同一`playerRef.id`が既に`role=player`で接続中(features/battle.md) |
 
-    `role: "spectator"`は参加者予約照合の対象外だが、`private`の`waiting`への接続は404 `ROOM_NOT_FOUND`で拒否する。匿名の観戦はチケット自体が不要(features/spectate.md)。ブラウザーのWebSocket APIはupgrade失敗のHTTPステータスを取得できないため、これらの区別はチケット発行RESTで行い、発行後に競合した接続失敗は共通の接続失敗表示にする
-  - チケットは`scope`・`role`と(`scope: "room"`の場合)`roomId`を含み、対応しないエンドポイント・異なるroomId・異なるroleでの接続には使えない(BattleRoomは自分の`roomId`とチケット内の`roomId`、および`?role=`とチケット内の`role`が一致するかを接続時に照合する。roomIdへの束縛だけでは席の予約にならない。マッチ成立時にDOへ予約した2名のplayerRefを保存し、発行時と接続時の両方で一致を確認して第三者の参加を拒否する)。同一チケットでの2本目の接続は拒否する(一回限り)
+    ブラウザーのWebSocket APIはupgrade失敗のHTTPステータスを取得できないため、これらの区別はチケット発行RESTで行い、発行後に競合した接続失敗は共通の接続失敗表示にする。**観戦者はチケットを取得しない**ため、観戦の失敗(private waiting・終了済み・未初期化)はWebSocket接続の失敗としてのみ現れ、features/spectate.mdの共通メッセージを表示する
+  - チケットは`scope`・`role`(常に`player`)と(`scope: "room"`の場合)`roomId`を含み、対応しないエンドポイント・異なるroomId・異なるroleでの接続には使えない(BattleRoomは自分の`roomId`とチケット内の`roomId`、および`?role=`とチケット内の`role`が一致するかを接続時に照合する。roomIdへの束縛だけでは席の予約にならない。マッチ成立時にDOへ予約した2名のplayerRefを保存し、発行時と接続時の両方で一致を確認して第三者の参加を拒否する)。同一チケットでの2本目の接続は拒否する(一回限り)
   - 二重接続の扱いは経路により異なる: MatchmakingQueueは同一`playerRef.id`の新しい接続が来たら**古い接続を切断してキューを差し替える**(features/matchmaking.md参照、UX上のタブ切り替えを許容するため)。BattleRoomは同一`playerRef.id`が既に`role=player`で接続中の場合、**新しい接続を409で拒否する**(対戦中の二重操作を防ぐため。features/battle.md参照)
-  - 実装の配置: `src/server/modules/wstickets/adapter/issueTicket.ts`(発行、HMAC署名、`optionalAuthenticate`をここで使う。ニックネーム検証は`modules/shared/domain/nicknameFilter.ts`を利用する)、`src/server/modules/wstickets/domain/verifyTicket.ts`(署名鍵を引数で受け取る純粋関数。DO側から呼ぶ)
+  - 実装の配置: `src/server/modules/wstickets/adapter/issueTicket.ts`(発行、HMAC署名、`optionalAuthenticate`をここで使う。ニックネーム検証は`modules/shared/domain/nicknameFilter.ts`を利用する)、`src/server/modules/wstickets/domain/verifyTicket.ts`(署名鍵を引数で受け取る純粋関数。DO側から呼ぶ)、`src/server/modules/auth/adapter/optionalAuthenticate.ts`(任意認証ミドルウェア本体。テンプレート既存の`authenticate`と同じディレクトリに置く)
 - **ゲストの識別**: `/api/guest/session`が発行する署名付き・Path=/api・HttpOnly/Secure(本番のみ。開発環境では環境変数で無効化)/SameSite=LaxのCookie(`guest_id`)で識別する。有効期限は既定24時間(PoCで採用した値をそのまま正式採用)。BattleRoom DOは接続時に`playerRef`をstorageへ保持するため、**対戦が始まった後の対戦セッション自体はCookie状態に左右されない**。ただし再接続には新しいチケットが必要であり、チケット発行(`POST /api/ws-tickets`)には有効な`guest_id` Cookieが必要になる。guest-session.mdで署名検証・固定期限・期限表示を定義する。失効後は同一ゲストで再接続できず、切断猶予による決着になる
 - **なりすまし対策の分担**: WebSocketメッセージ上のプレイヤー識別は`side`("P1"|"P2")を用い、**`side`はBattleRoom DOが予約時に固定する一意の権威値**とする(`/ws/matchmake`の`matched`メッセージは`side`を含まない。実際の`side`は`/ws/rooms/:roomId`接続後の`joined`メッセージで受け取る)。`playerRef.id`はチケット発行時にサーバが解決した値のみを信頼し、クライアントからの自己申告は使わない
 - **運営者権限**: Cognito user poolの管理者グループ名は**`admins`**に確定する。判定はJWTの`cognito:groups`クレームに`admins`が含まれることとする(他のグループとの併存を許容する)。通報一覧(`GET /api/reports`)はこの判定に失敗した場合、UI_SKETCH.htmlで実装済みの「権限なし」画面に相当する403を返す
-- **WebSocket接続の役割分離**: BattleRoomへの接続は`role=player`(最大2名、**3人目以降はWebSocketアップグレード自体をHTTP 409で拒否**)と`role=spectator`(無制限、チケット省略可)をクエリパラメータで区別する(PoC-5で実装・検証済み)。BattleRoomはWebSocket Hibernation API(`ctx.acceptWebSocket`/`getWebSockets`)で実装する(PoC-5で採用・検証済み。既知の制約の注意点を参照)。roomId・チケットが不正な接続の拒否方法はfeatures/battle.md「API」節で確定する
+- **WebSocket接続の役割分離**: BattleRoomへの接続は`role=player`(最大2名、チケット必須、**3人目以降はWebSocketアップグレード自体をHTTP 409で拒否**)と`role=spectator`(無制限、**チケットを使わない**。ログイン済みかどうかを問わず匿名接続として扱い、表示名は常に固定値`"観戦者"`)をクエリパラメータで区別する(PoC-5で実装・検証済み)。`finished`・未初期化・privateの`waiting`への`role=spectator`接続は404で拒否する。BattleRoomはWebSocket Hibernation API(`ctx.acceptWebSocket`/`getWebSockets`)で実装する(PoC-5で採用・検証済み。既知の制約の注意点を参照)。roomId・チケットが不正な接続の拒否方法はfeatures/battle.md「API」節で確定する
 - **BattleRoomの状態**: 初期化済みwaiting→in_progress→settling→finished。詳細はfeatures/battle.md「BattleRoomの状態機械」を正本とする。入室期限(`enterDeadline`)はDO初期化時からrandom15秒／private10分で、接続によって延長しない。未初期化DOは入室不可。**この入室期限は`waiting`の初回入室だけに適用し、`in_progress`中の本人復帰は固定席・接続世代・`disconnectDeadline`で判定する**(チケット発行時も同じ規則)。game_overは100ms判定窓で同時敗北を決める。
 - **期限・猶予の用語**: 同じ「15秒」が3か所に出るため、全docsで次の用語に統一する。
 
@@ -227,7 +228,7 @@ Cloudflare D1 + Drizzle ORM。認証はCognitoが担うため、パスワード�
 - **Workers KVのキー空間**: `match:<roomId>`のみを観戦一覧候補として使う。randomはwaitingから、privateはin_progressから掲載する(**掲載除外は書き側で行う**。privateの`waiting`はそもそもKVに書かないため、読み側での除外ロジックは持たない)。観戦者増減・状態変化を集約更新し終了時削除する。room_createdキーは不要。作成・期限の正本はDO。TTL120秒、継続中は30秒ごとに更新要求を出し、同一キーの書き込みを1秒以上に集約する。KV障害時に一覧から一時消えることは許容し、既存対戦は継続する。
   - **値のスキーマ**: KVの`list()`は値本体を返さないため、一覧表示に必要な情報はすべて**metadata**に入れる。`match:<roomId>`のmetadata JSONは`{ "status": "waiting"|"in_progress", "players": string[], "spectatorCount": number, "startedAt": string|null, "createdAt": string, "source": "random"|"private" }`。`players`は接続中プレイヤーの`displayName`配列(0〜2件、内部ID・`playerRef.id`は含めない)、`startedAt`は2名が揃った時刻で`waiting`ではnull、`createdAt`はDO初期化時刻。値本体(value)は空文字列でよい
   - metadataは**1024バイト以内**という制約があるが、`displayName`は`nicknameFilter`により最大20文字×2名で、UTF-8最長(1文字4バイト)でも160バイト。他のフィールドを足しても上限に収まる
-  - `GET /api/rooms/active`は`list({ prefix: "match:" })`の**metadataのみ**から応答を構成する(個別キーの`get`は行わない)。返却上限は100件とし、超過分は切り捨てる(`createdAt`の新しい順)
+  - `GET /api/rooms/active`は`list({ prefix: "match:" })`の**metadataのみ**から応答を構成する(個別キーの`get`は行わない)。**KVの`list()`が返す順序はキー名の辞書順であり`createdAt`順ではない**ため、次の手順を守る: ①`list_complete`が`true`になるまで`cursor`で辿って全metadataを集める(**列挙の安全上限1000キー**。到達したらそこで打ち切る) → ②`createdAt`の降順にソートする → ③先頭100件に切る。返却上限は100件で、超過分は切り捨てる
 
 - **グローバルトースト/ローディング/404・権限なし・ネットワークエラー画面/ErrorBoundary**: docs/design/UI_SKETCH.html のフェーズ4.5(アプリシェル方針)で確定済みの内容をそのまま採用する。詳細はUI_SKETCH.html「概要」タブを参照
 - **データ保持期間**:
@@ -256,17 +257,17 @@ KVは候補一覧にのみ利用する。存在・席・開始可否・期限の
 - **デプロイ先**: Cloudflare Workers(`wrangler deploy`)
 - **Durable Objects**: `MatchmakingQueue`(シングルトン、`idFromName("global-queue")`)、`BattleRoom`(対戦ごとに1インスタンス)。いずれも`wrangler.jsonc`の`durable_objects.bindings`にクラスを登録し、`migrations`配列で`new_sqlite_classes: ["MatchmakingQueue", "BattleRoom"]`を指定する(Cloudflare Workersの標準的なDO登録方式。PoC-1/PoC-3/PoC-5でこの方式のDOを実際に動作させ検証済み)
 - **Workers KVのキー・同期タイミング**: 横断規約「Workers KVのキー空間」参照(正本はそちら。ここでは重複記載しない)
-- **Service Binding(自己参照)**: BattleRoom DOが対戦終了時にHono API(`POST /api/battle-results`内部専用)を呼ぶため、`wrangler.jsonc`の`services`にWorker自身への self service binding(例: `{ "binding": "API", "service": "vstetris" }`)を登録する(PoC-4のbattle-result-persistence実装で採用したパターン)
+- **Service Binding(自己参照)**: BattleRoom DOが対戦終了時にHono API(`POST /api/internal/battle-results`)を呼ぶため、`wrangler.jsonc`の`services`にWorker自身への self service binding(例: `{ "binding": "API", "service": "vstetris" }`)を登録する(PoC-4のbattle-result-persistence実装で採用したパターン)
 - **D1**: 1つのデータベースをテンプレート標準構成のまま使用
 - **認証基盤**: Amazon Cognito User Pool(本番)。ローカル開発はmoto+Terraformでのモック(テンプレート標準、`docker compose up -d` + `vp run cognito:setup`)。退会時のAdminDeleteUser呼び出しにはCognito管理API用の認証情報(`COGNITO_ADMIN_ACCESS_KEY`/`COGNITO_ADMIN_SECRET_KEY`/`COGNITO_REGION`/`COGNITO_USER_POOL_ID`環境変数、値は未確定でセットアップissueでmotoとの疎通を確認しつつ確定する)が必要
 - **定期実行**: Cloudflare Cron Triggersで次の2ジョブを動かす(最小間隔1分の制約は影響しない用途)
 
-  | # | ジョブ | 対象 | 実装先 |
-  |---|---|---|---|
-  | ① | 期限切れリプレイの削除 | `replays` / `replay_chunks` / `replay_uploads`の`expires_at`超過分(`staging`のまま残ったもの、`discarded`の記録も含む。いずれも`endedAt`＋30日) | `src/server/modules/history/adapter/purgeExpiredReplays.ts`(features/battle-history.md。3テーブルすべてをこの1ファイルが担当する) |
-  | ② | `account_deletions`の再試行 | `retry_at`が現在時刻以下の行(Cognito削除・D1削除の未完了段階) | `src/server/modules/account/adapter/retryAccountDeletions.ts`(features/account.md) |
+  | # | cron式 | ジョブ | 対象 | 実装先 |
+  |---|---|---|---|---|
+  | ① | `0 18 * * *`(UTC。JST 03:00) | 期限切れリプレイの削除 | `replays` / `replay_chunks` / `replay_uploads`の`expires_at`超過分(`staging`のまま残ったもの、`discarded`の記録も含む。いずれも`endedAt`＋30日) | `src/server/modules/history/adapter/purgeExpiredReplays.ts`(features/battle-history.md。3テーブルすべてをこの1ファイルが担当する) |
+  | ② | `*/15 * * * *` | `account_deletions`の再試行と完了行の削除 | `retry_at`が現在時刻以下の行。`phase`が`completed`以外なら未完了段階を再実行し、`completed`なら行を削除する | `src/server/modules/account/adapter/retryAccountDeletions.ts`(features/account.md) |
 
-  いずれも小さいbatchを繰り返し、1回の実行で処理しきれない分は次回に持ち越す。Cron遅延は取得APIの期限判定を緩めない(取得時の期限判定がアクセス制御の正本)
+  **`scheduled`ハンドラは1つ**とし、`event.cron`の値で①②に振り分ける(`wrangler.jsonc`の`triggers.crons`に上記2式を登録する)。いずれも小さいbatchを繰り返し、1回の実行で処理しきれない分は次回に持ち越す。Cron遅延は取得APIの期限判定を緩めない(取得時の期限判定がアクセス制御の正本)
 
 ### リリース前の確認
 
@@ -310,3 +311,4 @@ CIでは型/lint、単体・Workerテスト、ビルド、Playwrightを実行す
 
 - 第2回(2026-09-18): `replay_uploads`テーブルの追加 →「データスキーマ」「保存の制約とトランザクション境界」。ゲストWSチケット期限の上限 → 横断規約「WebSocket認証(チケット方式)」。初回入室期限と再接続判定の分離 → 横断規約「BattleRoomの状態」。終了通知の回復(resultReceipt)とDO側の保持期間 →「保存の制約とトランザクション境界」「データ保持期間」。roomチケットへのrole束縛とチケット発行RESTの404/409 → 横断規約「WebSocket認証(チケット方式)」。
 - 第3回(2026-09-19): スキーマ表・Mermaid・インデックスへの`replay_uploads`/`replay_chunks`/`account_deletions`の追加、`battle_results.side`の追加、KV値(metadata)スキーマの定義、Cronジョブの2本立て、期限用語の統一、録画量の上限。詳細はdocs/design/DESIGN_REVIEW.mdを参照。
+- 第3回・第2周: 観戦はチケット不要に統一、内部POSTを`/api/internal/battle-results`へ改名、KV一覧の列挙・ソート手順、`account_deletions.phase`とJWT最大TTL 60分、cron式、退会batchの②-a/②-b追加。SQL固定文列はnode:sqliteで検算済み(docs/design/DESIGN_REVIEW.md「SQL検算」)。

@@ -39,6 +39,7 @@ DESIGN.md「API一覧」参照。
 | --- | --- | --- |
 | ゲストIDの発行・Cookie設定(認証ミドルウェアなし) | adapter | `src/server/modules/guest/adapter/guestSession.ts` |
 | NGワード判定(account.mdの新規登録、`POST /api/ws-tickets`からも共通利用するため`shared`配下に置く) | domain | `src/server/modules/shared/domain/nicknameFilter.ts` |
+| ゲスト名の読み書き(sessionStorage、キー`vstetris.guestName`。**書き込みはこのHome側が正本**、features/tutorial.md・features/matchmaking.mdは読み取りのみ) | front | `src/front/lib/guestName.ts` |
 | ゲスト入力モーダル | front | `src/front/pages/Home.tsx` |
 
 ## エッジケースの決定

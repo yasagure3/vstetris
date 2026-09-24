@@ -22,7 +22,7 @@
 | 自分の盤面が最上段まで積み上がる | `game_over`をサーバへ送信、敗北として対戦終了、結果画面へ |
 | 相手が切断 | 再接続待ちバナー表示(猶予15秒) |
 | 猶予超過 | 自分の不戦勝として結果画面へ |
-| 「通報する」を選ぶ | ReportModalを開き、`reporterLabel`(自分の`displayName`)・`targetLabel`(相手の`displayName`、`battle_start.peers`から取得。`joined.peers`は接続時点で自分1件しか含まれない場合があるため使わない)・`roomId`を渡して送信する(features/report.md参照) |
+| 「通報する」を選ぶ | ReportModalを開き、`reporterLabel`(自分の`displayName`)・`targetLabel`(相手の`displayName`。**`battle_start.peers`、再接続後は`resume.peers`から取得する**。`joined.peers`は接続時点で自分1件しか含まれない場合があるため使わない)・`roomId`を渡して送信する(features/report.md参照) |
 | 色覚サポートON | ブロックに記号を重ねて表示(US-025) |
 | キー割当変更 | 以降の操作入力に反映(登録プレイヤーはアカウント設定`account_settings`から、ゲストはブラウザのlocalStorageから対戦開始時に読み込む) |
 | 結果画面で「もう一度対戦」 | `/ws/matchmake`への再接続(新規チケット取得から)。同一BattleRoomでの再戦ではなく、通常のマッチメイキングをやり直す扱いとする(UC-004代替フローD。ルーム対戦(features/room.md)で決着した場合も同様にランダムマッチングへ飛ぶ。同じ相手との再戦には新規ルーム作成が必要) |
@@ -89,12 +89,12 @@ DO alarmは一つなので、入室期限・heartbeat期限・再接続期限・
 
 ## API
 
-### WS /ws/rooms/:roomId?role=player|spectator&ticket=<ticket>
-- 認証: DESIGN.md横断規約「WebSocket認証(チケット方式)」参照。`role=player`は`ticket`必須(`scope: "room"`、DOが`playerRef`と`displayName`を検証・解決する)。検証失敗(署名不正・期限切れ・scope不一致・使用済み)はHTTP 401でアップグレードを拒否する。`role=spectator`は`ticket`省略可(匿名観戦を許容する。省略時、または`ticket`を付けても`displayName`は常に固定値`"観戦者"`として扱う)
+### WS /ws/rooms/:roomId?role=player&ticket=<ticket> / ?role=spectator
+- 認証: DESIGN.md横断規約「WebSocket認証(チケット方式)」参照。`role=player`は`ticket`必須(`scope: "room"`、DOが`playerRef`と`displayName`を検証・解決する)。検証失敗(署名不正・期限切れ・scope不一致・role不一致・使用済み)はHTTP 401でアップグレードを拒否する。**`role=spectator`は`ticket`を使わない**(ログイン済みかどうかを問わず匿名接続として扱い、`ticket`が付いていても無視する。`displayName`は常に固定値`"観戦者"`)
 - `role=player`は最大2接続(3人目以降は**WebSocketアップグレード自体をHTTP 409で拒否**する。DESIGN.md横断規約「WebSocket接続の役割分離」参照)。加えて、同一`playerRef.id`が既に`role=player`で接続中の場合、2本目の接続はHTTP 409で拒否する(ルーム対戦での自己対戦・二重枠占有の防止)
 - roomId・DO期限・タイムアウトの判定は上記「BattleRoomの状態機械」参照
 - upgrade自体を拒否する条件(上記「BattleRoomの状態機械」と同じ判定。ブラウザーはこのHTTPステータスを読み取れないため、区別はチケット発行RESTで行う。DESIGN.md横断規約「WebSocket認証(チケット方式)」のエラー一覧参照):
-  - **404**: 対象roomIdのDOが未初期化 / `waiting`の`enterDeadline`超過 / `finished`への`role=player`接続 / `private`の`waiting`への`role=spectator`接続
+  - **404**: 対象roomIdのDOが未初期化 / `waiting`の`enterDeadline`超過 / `finished`への接続(**`role=player`・`role=spectator`とも**。観戦側は「対戦は終了しました」を表示する。features/spectate.md「一覧の更新遅延」、DESIGN.md「KVレジストリの整合性」と一致) / `private`の`waiting`への`role=spectator`接続
   - **409**: `role=player`の席が既に2つ埋まっている(3人目以降) / 同一`playerRef.id`が既に`role=player`で接続中
   - **401**: チケットの署名不正・期限切れ・scope不一致・role不一致・roomId不一致・使用済み
 
@@ -103,7 +103,6 @@ DO alarmは一つなので、入室期限・heartbeat期限・再接続期限・
 対戦で流れるWebSocketメッセージはこの一覧を正本とする(観戦固有のものは下記のとおりfeatures/spectate.mdを参照)。
 
 - クライアント→サーバ(特記なきものはplayerのみ):
-  - `{ "type": "input", "action": "moveLeft"|"moveRight"|"rotate"|"softDrop"|"hardDrop"|"hold" }`
   - `{ "type": "board_update", "seq": number, "board": <盤面スナップショット(クライアント→サーバ形式)>, "resumeState": <完全なエンジン状態> }`(`resumeState`は復帰用にDOが内部保存するだけで、中継・観戦配信・録画には含めない。下記「復帰と切断」参照)
   - `{ "type": "piece_locked", "lockSeq": number, "count": number, "board": <消去後・おじゃま適用前>, "resumeState": <完全なエンジン状態> }`
   - `{ "type": "lock_applied", "lockSeq": number, "board": <おじゃま適用後>, "resumeState": <完全なエンジン状態> }`(`lock_result`を一度だけ適用したことの確認。下記「着地の確定」参照)
@@ -117,32 +116,35 @@ DO alarmは一つなので、入室期限・heartbeat期限・再接続期限・
   - `{ "type": "lock_result", "lockSeq": number, "appliedRows": number, "holeColumn": 0..9, "pendingAttack": number }`(着地の確定応答。**送信先は当該playerのみ**。下記「着地の確定」参照)
   - `{ "type": "garbage_incoming", "amount": number, "target": "P1"|"P2" }`
   - `{ "type": "opponent_disconnected" }` / `{ "type": "opponent_reconnected" }`
-  - `{ "type": "resume", "side": "P1"|"P2", "startedAt": string, "lastBoardSeq": number, "lastLockSeq": number, "acknowledgedLockSeq": number, "board": <盤面スナップショット>, "resumeState": <完全なエンジン状態>, "pendingLockResult": <lock_result相当>|null, "pendingAttack": number, "disconnectDeadline": string, "resultReceipt": string }`(**再接続したplayerのみ**へ送る復帰状態。下記「復帰と切断」参照)
+  - `{ "type": "resume", "side": "P1"|"P2", "peers": [{ "side": "P1"|"P2", "displayName": string }], "startedAt": string, "lastBoardSeq": number, "lastLockSeq": number, "acknowledgedLockSeq": number, "board": <自分の盤面スナップショット>, "opponentBoard": <相手の最新盤面スナップショット(サーバ→クライアント形式、pendingAttack込み)>|null, "resumeState": <自分の完全なエンジン状態>, "pendingLockResult": <lock_result相当>|null, "pendingAttack": number, "disconnectDeadline": string, "resultReceipt": string }`(**再接続したplayerのみ**へ送る復帰状態。`peers`は`battle_start`と同じ形式で、相手の`displayName`を復元するために含める(通報の`targetLabel`の出所になる)。`opponentBoard`は相手の最新スナップショットで、DOに保存が無ければnull。下記「復帰と切断」参照)
   - `{ "type": "pong" }`(アプリheartbeatの応答)
   - `{ "type": "reaction", "emoji": string, "from": "spectator" }`(全接続者へブロードキャスト。仕様はfeatures/spectate.mdを正本とする)
   - `{ "type": "battle_end", "winner": "P1"|"P2"|null, "reason": "normal"|"forfeit_timeout"|"draw_timeout", "summary": { "P1": { "linesCleared": number, "linesSent": number }, "P2": { "linesCleared": number, "linesSent": number }, "durationMs": number } }`(`winner`は引き分け時null。`summary.P1`/`summary.P2`は消去/送出ラインのみを持つ。`durationMs`は両者共通の値としてトップレベルに置く。フロントは結果表示時、消去/送出ラインは`summary[自分のside]`から、対戦時間は`summary.durationMs`から読む)
   - WebSocketエラー形式: DESIGN.md横断規約「WebSocketエラー応答形式」参照(`ROOM_DISBANDED`、`REACTION_RATE_LIMITED`等)
 
 下記「着地・再開・記録の通信契約」は各メッセージの順序・冪等性・境界条件を定める補足であり、メッセージ形式そのものは上記一覧を正本とする。
-### POST /api/battle-results(内部専用)
+### POST /api/internal/battle-results
 
-決着後、BattleRoomはservice binding(`env.API`、DESIGN.md「インフラ」参照)経由で`POST https://internal/api/battle-results`(内部専用)を呼びD1へ永続化する。リクエストヘッダ`X-Internal-Secret: <BATTLE_RESULTS_INTERNAL_SECRET環境変数>`で保護し、Hono側はこのヘッダを検証する(JWT/Cookieによる認証は行わない、DOはユーザーの資格情報を持たないため)。
+決着後、BattleRoomはservice binding(`env.API`、DESIGN.md「インフラ」参照)経由で`POST https://internal/api/internal/battle-results`(内部専用)を呼びD1へ永続化する。リクエストヘッダ`X-Internal-Secret: <BATTLE_RESULTS_INTERNAL_SECRET環境変数>`で保護し、Hono側はこのヘッダを検証する(JWT/Cookieによる認証は行わない、DOはユーザーの資格情報を持たないため)。
 
 - リクエストボディ: `{ "roomId": string, "players": [{ "playerRef": <両者分。登録・ゲストとも含む>, "side": "P1"|"P2", "displayName": string, "result": "win"|"lose"|"draw", "linesCleared": number, "linesSent": number }], "durationMs": number, "endedReason": "normal"|"forfeit_timeout"|"draw_timeout", "endedAt": <DOで確定したUTC時刻>, "replayManifest": <下記version1形式> }`。`players[].side`はDOが予約時に固定した席で、`battle_results.side`にそのまま保存する(リプレイ再生時の「本人の盤面」判定に使う)
 - レスポンス(200): `{ "status": "finalized"|"discarded", "created": number }`。`created`はこの呼び出し完了時点で当該`roomId`に存在する`battle_results`行数(0〜2)で、冪等再送でも同じ値・同じ形を返す。`status`は`replay_uploads.status`の確定値
-- エラー: `X-Internal-Secret`不一致 → 401。ボディ不正 → 400。D1障害 → 503(DOはalarmで再試行する)
-- **DOは200を受領した時点でのみ**自身の録画データを削除する(`status`が`discarded`でも削除してよい。410 `REPLAY_DISCARDED`を受けた場合も同じ)
+- エラー: `X-Internal-Secret`不一致 → 401。ボディ不正 → 400。D1障害 → 503(DOはalarmで再試行する)。**このPOSTは410を返さない**(410 `REPLAY_DISCARDED`はチャンク転送`PUT /api/internal/replays/:roomId/:chunkIndex`の応答であり、下記「保存と退会の競合」が出所)
+- **DOは200を受領した時点でのみ**自身の録画データを削除する(`status`が`discarded`でも削除してよい)。チャンク転送の途中で410 `REPLAY_DISCARDED`を受けた場合は、その時点で転送を打ち切り録画を削除する
 
 #### 確定batchの固定SQL文列
 
-D1のbatchは前の文の実行結果で分岐できないため、**常に同じ順序・同じ文数**を送り、分岐はSQL内の`EXISTS`/`CASE`で表現する。`?`は束縛変数(1文あたり100個以下を守る)。`?now`はHono側が受信時に一度だけ決めるUTC時刻、`?expiresAt`は`endedAt + 30日`(不変)。
+D1のbatchは前の文の実行結果で分岐できないため、**常に同じ順序・同じ文数**を送り、分岐はSQL内の`EXISTS`/`CASE`で表現する。`?now`はHono側が受信時に一度だけ決めるUTC時刻、`?expiresAt`は`endedAt + 30日`(不変)。
+
+> **記法について**: 以下のSQLの`?name`は**可読性のための表記**であり、SQLiteの名前付きパラメータ構文ではない(名前付きは`:name`/`@name`/`$name`)。実装では**出現順の位置指定`?`に展開**し、同じ論理値が複数回現れる場合も**その都度バインドする**。1文あたりの束縛変数は100個以下を守る(DESIGN.md「既知の制約」)。
+> **そのまま流してはならない**: `WHERE`/`VALUES`/`SET`内の`?name`は構文エラーになるが、**SELECT句内では`? AS name`(位置パラメータ＋列別名)として黙って受理される**(①の`SELECT ?id, ?roomId, ?playerId, ...`がこれに当たる。node:sqliteで確認済み)。エラーにならないまま位置がずれうるため、展開を省略しないこと。
 
 | # | 文数 | 内容 |
 |---|---|---|
 | ① | 2(`players`の各要素に1文、ゲスト要素でも同じ文を送る) | 有効性条件つきの`INSERT ... SELECT`で`battle_results`を作る |
-| ② | 1 | `battle_results`が存在する場合のみ`replays`を作る`INSERT ... SELECT` |
+| ② | 1 | `battle_results`が存在し、かつチャンクが完全な場合のみ`replays`を作る`INSERT ... SELECT` |
 | ③ | 1 | `replay_uploads`を`CASE WHEN EXISTS`で`finalized`/`discarded`へ`UPDATE` |
-| ④ | 1 | `battle_results`が0件のときだけ`replay_chunks`を`DELETE ... WHERE NOT EXISTS` |
+| ④ | 1 | `replays`が0件のときだけ`replay_chunks`を`DELETE ... WHERE NOT EXISTS` |
 | ⑤ | 1 | 応答組み立て用の`SELECT`(件数と確定`status`) |
 
 ① `battle_results`のINSERT(各playerごと。有効な登録者は「`users`に存在し、かつ`account_deletions`に行が無い」):
@@ -182,10 +184,13 @@ WHERE br.room_id = ?roomId
   AND EXISTS (SELECT 1 FROM replay_uploads ru
               WHERE ru.room_id = ?roomId AND ru.status = 'staging' AND ru.expires_at > ?now)
   AND (SELECT COUNT(*) FROM replay_chunks c WHERE c.room_id = ?roomId) = ?chunkCount
+  AND NOT EXISTS (SELECT 1 FROM replay_chunks c2
+                  WHERE c2.room_id = ?roomId
+                    AND (c2.chunk_index < 0 OR c2.chunk_index >= ?chunkCount))
 ON CONFLICT(battle_result_id) DO NOTHING;
 ```
 
-`chunkCount`が0(録画なし・上限超過で録画中止)、保存時点で既に期限切れ、チャンク欠損、`staging`でない(既に`discarded`)のいずれでも0行になり、サマリーだけが保存される。
+`chunkCount`が0(録画なし・上限超過で録画中止)、保存時点で既に期限切れ、チャンク欠損、`staging`でない(既に`discarded`)のいずれでも0行になり、サマリーだけが保存される。件数一致(`COUNT(*) = ?chunkCount`)と**範囲外indexが無いこと**を両方条件にすることで、`0..chunkCount-1`が連続して揃っていることが保証される(件数だけでは`chunk_index`が飛んでいる場合を弾けない)。
 
 ③ `replay_uploads`の確定:
 
@@ -196,22 +201,22 @@ SET status = CASE WHEN EXISTS (SELECT 1 FROM replays WHERE room_id = ?roomId)
 WHERE room_id = ?roomId AND status = 'staging';
 ```
 
-④ 参照が1件も作られなかった場合のチャンク削除:
+④ `replays`参照が1件も作られなかった場合のチャンク削除(**`battle_results`ではなく`replays`の有無で判定する**。登録者の履歴はあるがチャンク欠損・`chunkCount=0`で`replays`が作られなかった場合も、そのチャンクは誰からも参照されないため削除する):
 
 ```sql
 DELETE FROM replay_chunks
 WHERE room_id = ?roomId
-  AND NOT EXISTS (SELECT 1 FROM battle_results WHERE room_id = ?roomId);
+  AND NOT EXISTS (SELECT 1 FROM replays WHERE room_id = ?roomId);
 ```
 
-⑤ 応答の組み立て:
+⑤ 応答の組み立て(**`replay_uploads`行が存在しない場合**(両者ゲストでチャンク転送を一度も行っていない等)は`status`がNULLになるため、`COALESCE`で`'discarded'`に落とす):
 
 ```sql
 SELECT (SELECT COUNT(*) FROM battle_results WHERE room_id = ?roomId) AS created,
-       (SELECT status FROM replay_uploads WHERE room_id = ?roomId) AS status;
+       COALESCE((SELECT status FROM replay_uploads WHERE room_id = ?roomId), 'discarded') AS status;
 ```
 
-`battle_results`行が0件になるのは**両者ゲスト、または有効性条件を満たす登録者が0名(両者とも退会中・退会済み)**の場合で、このとき②は0行、③で`discarded`へ遷移し、④でチャンクを削除する。応答は`{ "status": "discarded", "created": 0 }`となり、DOは録画を削除する。
+`battle_results`行が0件になるのは**両者ゲスト、または有効性条件を満たす登録者が0名(両者とも退会中・退会済み)**の場合で、このとき②は0行、③で`discarded`へ遷移し(該当行が無ければ0行更新)、④でチャンクを削除する。応答は`{ "status": "discarded", "created": 0 }`となり、DOは録画を削除する。
 
 ## 実装の配置
 
@@ -220,7 +225,7 @@ SELECT (SELECT COUNT(*) FROM battle_results WHERE room_id = ?roomId) AS created,
 | BattleRoom Durable Object本体(WebSocket中継・状態機械・切断/タイムアウト管理) | DO | `src/server/battle/battleRoom.ts` |
 | WebSocketアップグレードのルーティング(`/ws/rooms/:roomId`、role判定・roomId形式検証) | adapter | `src/server/modules/battle/adapter/wsRoute.ts` |
 | おじゃまライン対応表・相殺計算 | domain | `src/server/modules/battle/domain/garbageCalculator.ts` |
-| 対戦終了時のD1永続化(内部API `POST /api/battle-results`、上記「確定batchの固定SQL文列」) | adapter | `src/server/modules/battle/adapter/battleResults.ts` |
+| 対戦終了時のD1永続化(内部API `POST /api/internal/battle-results`、上記「確定batchの固定SQL文列」) | adapter | `src/server/modules/battle/adapter/battleResults.ts` |
 | 終了結果の再取得(`GET /api/rooms/:roomId/result`、receipt検証とBattleRoom DOへの照会) | adapter | `src/server/modules/battle/adapter/roomResult.ts` |
 | DOからの冪等チャンク転送(`PUT /api/internal/replays/:roomId/:chunkIndex`、replay_uploads/replay_chunksの条件付き書き込み) | adapter | `src/server/modules/battle/adapter/replayChunks.ts` |
 | ws-ticket発行時のBattleRoom DO照会(存在・期限・席・role適合の確認。`POST /api/ws-tickets`から呼ぶDOの内部RPCラッパー) | adapter | `src/server/modules/battle/adapter/roomTicketCheck.ts` |
@@ -255,7 +260,7 @@ DOはlastLockSeq、直前のlock_result、完全なresumeStateを保存する。
 ### 復帰と切断
 roomIdは対戦URLに保持し、再読込でも同じ部屋を対象にする。sideは予約時の割当を維持する。
 `board_update`には内部保存用resumeStateも添付する。resumeStateはengineVersion、cells、current、next、hold、holdUsed、bag残り順序、乱数状態、落下・固定タイマー残量、確定lockSeqを含む。観戦配信には内部乱数状態を含めない。seqはside単位で単調増加し、DOの保存済みseq以下は破棄する。
-接続時に `{type:"resume",side,state,startedAt,lastBoardSeq,lastLockSeq,acknowledgedLockSeq,board,resumeState,pendingLockResult,pendingAttack,disconnectDeadline}` を送信する。pendingLockResultがあるときは返却された適用前resumeStateから一度適用してlock_appliedを送り直す。
+接続時に`resume`を送信する(**フィールド定義は上記「WebSocketメッセージ一覧(正本)」を参照**。ここでは重複定義しない)。pendingLockResultがあるときは返却された適用前resumeStateから一度適用してlock_appliedを送り直す。`peers`から相手の`displayName`を、`opponentBoard`から相手の盤面表示を復元する(いずれも再読込・再接続後に通報モーダルと相手盤面が空にならないようにするため)。
 切断した側のシミュレーションは停止し、復帰時は最後にDOが保存した状態から再開する(未送信入力は失われる)。接続中の相手は継続し、切断側への攻撃はDOに蓄積する。
 
 アプリheartbeatは5秒ごとに`{type:"ping"}`／`{type:"pong"}`。DOで最後の受信から15秒無通信(`heartbeatTimeout`)なら切断と判定し、そこから再接続猶予15秒(`disconnectDeadline`)を開始する。close/errorなら即座に猶予開始。用語はDESIGN.md横断規約「期限・猶予の用語」に従う。同じ参加者の古いsocketのcloseを現接続の切断として処理しない。
@@ -268,11 +273,17 @@ roomIdは対戦URLに保持し、再読込でも同じ部屋を対象にする�
 
 **記録量の上限(M5の確定値)**:
 - 同一`side`につき**250ms以内の連続`board_update`は間引く**(直近に記録したsnapshotから250ms未満のものは捨てる)。ただし`lock_applied`直後のsnapshotと`battle_end`直前のsnapshot、および対戦開始時の両盤面は間引かずに必ず記録する
-- チャンク数の上限は**40**(256KiB×40＝約10MiB)。超過した時点で以降の録画を止め、その対戦の`replays`行は作成しない(`replayManifest`の`chunkCount`に0を渡す)。**履歴のサマリー(`battle_results`)は通常どおり保存**し、リプレイ再生は「リプレイを再生できません」(UC-007 E1)になる
+- チャンク数の上限は**40**(256KiB×40＝約10MiB)。超過した時点で以降の録画を止め、その対戦の`replays`行は作成しない(`replayManifest`の`chunkCount`に0を渡す)。**この場合チャンクの転送(`PUT /api/internal/replays/...`)は一切行わず、DO内の録画は終了時にそのまま破棄する**(転送済みの分があれば確定batchの④で削除される)。**履歴のサマリー(`battle_results`)は通常どおり保存**し、リプレイ再生は「リプレイを再生できません」(UC-007 E1)になる
 
 **シーク(M7の確定仕様)**: manifestは各チャンクの時刻範囲 `chunks: [{index, startTMs, endTMs}]` を持つ。`startTMs`はそのチャンク先頭イベントのtMs、`endTMs`は末尾イベントのtMs。シークは**対象時刻を含むチャンク**(`startTMs <= tMs <= endTMs`)から取得し、そのチャンク内で指定時点以下の各sideの最後のsnapshotで盤面を復元する。指定時点以下のsnapshotがそのチャンクに無いsideについては、前方のチャンクを順に遡って直近のsnapshotを探す。取得済みチャンクはメモリに保持して再取得しない(features/battle-history.md「GET /api/battle-results/:id/replay/chunks/:index」と同じ定義)。この`chunks`配列は`replays.chunks`(JSON)に保存し、`GET /api/battle-results/:id/replay`のmanifest応答でそのまま返す。
 
-長時間対戦を一つのD1行に保存しない。eventsをイベント境界で分割し、JSON配列のUTF-8表現が最大256KiBのチャンクにし、DO SQLiteに逐次保存する。終了時はチャンクを内部APIで冪等に転送後、manifestと結果を確定する。チャンク転送は `PUT /api/internal/replays/:roomId/:chunkIndex`、内部POSTと同じservice binding・X-Internal-Secretで保護し、本文 `{endedAt,hash,data}`、応答204。同じキー・hashなら再送成功、異なる内容は409。最終POST battle-resultsでは `replayManifest:{version:1,chunkCount,startedAt,endedAt,chunks:[{index,startTMs,endTMs}]}` を渡し、全チャンクの存在・個別hash確認後だけ結果を公開する。保存失敗時はDOに未送信データを残しalarm再試行する。
+長時間対戦を一つのD1行に保存しない。eventsをイベント境界で分割し、JSON配列のUTF-8表現が最大256KiBのチャンクにし、DO SQLiteに逐次保存する。終了時はチャンクを内部APIで冪等に転送後、manifestと結果を確定する。チャンク転送は `PUT /api/internal/replays/:roomId/:chunkIndex`、内部POSTと同じservice binding・X-Internal-Secretで保護し、本文 `{endedAt,hash,data}`、応答204。
+
+**hashの照合はこのPUTの受信時に完了する**(Hono側が受信した`data`のUTF-8バイト列からSHA-256を計算して本文の`hash`と突き合わせ、不一致なら400で保存しない。同じキー・同じhashの再送は204で成功、同じキーで異なるhashは409)。したがって**確定batchとmanifestではhashを再照合しない**(確定batchで確認するのは`staging`であること・未期限切れ・件数一致・範囲外indexが無いことのみ)。取得API(`GET /api/battle-results/:id/replay/chunks/:index`)はhashをそのまま返し、クライアントが再生前に検証する。
+
+**転送のsubrequest上限**: 1回のalarm(1回の転送処理)で送るPUTは**最大10チャンク**とし、残りは次のalarmへ持ち越す(Cloudflare Workersの1リクエストあたりsubrequest上限に収めるため)。転送進捗はDO storageに`nextChunkIndex`(次に送るべきchunk_index)として永続化し、Hibernation復帰後もそこから再開する。
+
+最終POST(`/api/internal/battle-results`)では `replayManifest:{version:1,chunkCount,startedAt,endedAt,chunks:[{index,startTMs,endTMs}]}` を渡し、全チャンクの存在(件数一致・範囲外indexなし)を確認したうえだけで結果を公開する。保存失敗時はDOに未送信データを残しalarm再試行する。
 D1のreplay_chunksはroom_id/chunk_index複合主キー、data、hash、expires_atを持つ。replaysはroom_id、version、chunk_count、started_at、ended_atと本人用の取得権限を持つ。本人退会でreplaysを消し、同じroom_idの参照が残らなければ共有チャンクも削除する。期限切れ・未完了アップロードはendedAt+30日で削除する。保存リトライで保持期間を延長しない。
 
 ### 追加の受け入れ試験
@@ -281,7 +292,7 @@ D1のreplay_chunksはroom_id/chunk_index複合主キー、data、hash、expires_
 
 ### 保存と退会の競合
 保存時の有効な登録者はusersに存在し、account_deletionsに存在しない者。この条件は事前SELECTだけでなくD1 batch内のINSERT ... SELECTとNOT EXISTSへ含める。具体的な文列は上記「確定batchの固定SQL文列」を正本とする(D1 batchは前の文の結果で分岐できないため、常に同じ順序・同じ文数を送る)。本人が対象外なら履歴・replays参照を作らない。相手が削除中／不在ならopponent_id=null、opponent_label="退会済みプレイヤー"。対象0名も正常成功とする。既存UNIQUE(room_id,player_id)行は再送で更新せず、退会で匿名化した名前を復元しない。
-退会側は同じbatchで**①相手履歴のopponent_label匿名化UPDATE → ②本人のreplays・履歴・設定の削除 → ③users削除**の固定順で実行する(battle_results.opponent_idはON DELETE SET NULLのため、usersを先に削除すると匿名化すべき相手行を特定できなくなる。features/account.md「DELETE /api/account」が正本)。保存先行なら退会が消し、退会先行なら条件付きINSERTが抑止する。
+退会側は同じbatchで**①相手履歴のopponent_label匿名化UPDATE → ②-a 共有チャンク削除 → ②-b replay_uploadsのdiscarded化 → ②-c 本人のreplays・battle_results・account_settingsの削除 → ③users削除**の固定順で実行する(battle_results.opponent_idはON DELETE SET NULLのためusersを先に削除すると匿名化すべき相手行を特定できなくなる。また②-a/②-bは**本人のreplaysを削除する前**に実行しないと対象room_idを特定できなくなる。features/account.md「DELETE /api/account」が正本)。保存先行なら退会が消し、退会先行なら条件付きINSERTが抑止する。
 
 replay_uploads(room_id PK, status:staging|finalized|discarded, ended_at, expires_at)で転送状態を持つ。
 
@@ -301,19 +312,21 @@ WHERE EXISTS (SELECT 1 FROM replay_uploads
 ON CONFLICT(room_id, chunk_index) DO NOTHING;
 ```
 
-応答は、②の後に既存行のhashを読んで判定する: 書けた／同じキー・同じhashが既にある → 204。同じキーで異なるhash → 409。`finalized`では既存index・同じhashの再送だけ成功し、新規indexは409で禁止する。`discarded`／期限切れ(`expires_at <= ?now`)は書き込まず410 `REPLAY_DISCARDED`(呼出側は再試行しない)。期限後PUTは不変endedAtで拒否する。
+**batchの前に**、Hono側が受信した`data`のUTF-8バイト列からSHA-256(小文字hex)を計算し、本文の`hash`と一致しなければ400 `CHUNK_HASH_MISMATCH`で保存しない(**hash照合はここで完了し、確定batchでは再照合しない**)。応答は、②の後に既存行のhashを読んで判定する: 書けた／同じキー・同じhashが既にある → 204。同じキーで異なるhash → 409。`finalized`では既存index・同じhashの再送だけ成功し、新規indexは409で禁止する。`discarded`／期限切れ(`expires_at <= ?now`)は書き込まず410 `REPLAY_DISCARDED`(呼出側は再試行しない)。期限後PUTは不変endedAtで拒否する。
 
 最終結果batchは参照作成対象ありならfinalized、**両者ゲスト、または有効性条件を満たす登録者が0名**ならdiscarded化してチャンクを削除する(上記③④)。stagingは参照0件でも掃除せず、endedAt+30日の期限で削除する。退会で最後の参照が消えるroom_idだけ同じbatchでdiscarded化・チャンク削除する。discarded記録はendedAt+30日まで保持し遅延PUTによる再生成を防ぐ。
 
 ### チャンクの型・確定・削除
 snapshotイベントは {index,tMs,type:"snapshot",side:"P1"|"P2",board}、endイベントは {index,tMs,type:"end",winner,reason,summary}。endのwinner/reason/summaryはbattle_endと同じでside/boardは持たない。
 dataはDOで一度JSON.stringifyしたイベント配列のJSON文字列。hashはそのUTF-8バイト列に対するSHA-256小文字hex。転送・保存・取得時は再シリアライズせず同じdata文字列を扱い、受信側はhash検証後にJSON.parseする。1イベントが256KiBを超える入力は拒否する。chunkIndexは0から連続、event indexは全体で連続とする。
-各チャンクは不変。最終確定batchではstaging・未期限切れ・期待chunk_countと実件数および連続indexの一致を条件にreplays参照を作りfinalizedへ遷移する(上記「確定batchの固定SQL文列」②の`EXISTS`/`COUNT(*)`条件がこれに当たる)。期限切れ削除やdiscarded遷移と競合して欠損データを公開しない。期限切れならサマリーだけ保存する。
+各チャンクは不変。**hash照合はPUT受信時に完了しているため、最終確定batchでは再照合しない**(上記「リプレイ」参照)。最終確定batchではstaging・未期限切れ・期待chunk_countと実件数の一致・範囲外indexが無いことを条件にreplays参照を作りfinalizedへ遷移する(上記「確定batchの固定SQL文列」②の`EXISTS`/`COUNT(*)`/`NOT EXISTS`条件がこれに当たる)。期限切れ削除やdiscarded遷移と競合して欠損データを公開しない。期限切れならサマリーだけ保存する。
 DO録画は最終POSTの200受領／410で削除する。未成功でもendedAt+30日で録画を削除し、サマリー保存の再試行は別に継続する。両者ゲストと分かっている場合はD1へ転送せず録画を終了時削除する(転送済みだった場合も確定batchの④でチャンクが削除される)。
 
 ### 終了結果の再取得
 joinedで各参加者へ128bit以上のランダムなresultReceiptを個別送信し(`role=player`のみ。spectatorには送らない)、DOにはhashとsideを保存する。**再接続時のresumeにも同じresultReceiptを含めて再送する**(同一試合中は値を変えず、receiptのhash保存も更新しない)。クライアントはsessionStorageに保持しURLやログに載せない。対戦再開の権限には使えない。
-GET /api/rooms/:roomId/resultはX-Room-Result-Receiptで元参加者の結果読取資格だけを検証する。finishedなら200でbattle_end内容、未決着なら202、無効／未開始解散／期限切れは404。別sideは指定不可。登録者は削除要求中・退会後に拒否する。Cookie失効後のゲストもreceiptで結果を読めるが対戦へ再接続はできない。
+GET /api/rooms/:roomId/resultはX-Room-Result-Receiptで元参加者の結果読取資格だけを検証する。finishedなら200、未決着なら202、無効／未開始解散／期限切れは404。別sideは指定不可。
+
+200の応答は `{ "side": "P1"|"P2", "winner": "P1"|"P2"|null, "reason": "normal"|"forfeit_timeout"|"draw_timeout", "summary": { "P1": {...}, "P2": {...}, "durationMs": number }, "endedAt": string }`。`winner`/`reason`/`summary`は`battle_end`と同じ内容で、**`side`はDOが保存したreceipt hash→sideの対応から解決した呼び出し元自身の席**である(クライアントの自己申告ではない)。`battle_end`を受け取れなかったクライアントは`joined`のsideを保持できていない場合があるため、この経路では応答の`side`を使って結果を表示する。登録者は削除要求中・退会後に拒否する。Cookie失効後のゲストもreceiptで結果を読めるが対戦へ再接続はできない。
 応答はCache-Control: no-store。DOは終了後24時間だけ結果再取得用サマリーとreceipt hashを保持してから削除する。一試合の終了通知回復用で、ゲスト履歴索引は作らない。D1保存の未完了リトライ状態とは分離する。
 
 **battle_end未受信時の回復手順(正本。features/battle-history.mdはこれを参照する)**: 結果画面はbattle_endを受け取れないまま遷移した場合、sessionStorageのresultReceiptを`X-Room-Result-Receipt`に載せて`GET /api/rooms/:roomId/result`を呼ぶ。**202(未決着)は3秒間隔で最大10回までポーリング**し、それでも200にならなければ404と同じ扱いにする。**404は「結果を取得できませんでした」を表示してトップへ戻す**。200を受け取ったら通常の結果画面を表示する。receiptがsessionStorageに無い場合はAPIを呼ばずに同じ「結果を取得できませんでした」を表示する。

@@ -24,8 +24,8 @@ UI_SKETCH.html「ReportModal」「AdminReports」画面に対応。
 ### POST /api/reports
 - 認証: 不要(ゲスト可)
 - リクエスト: `{ "reporterLabel": string, "targetLabel": string, "reason": "inappropriate_nickname"|"cheating_suspected"|"other", "detail"?: string, "roomId"?: string }`。値の出所(呼び出し画面ごとにフロントが自動的に詰める。通報者の身元確認は行わない=MVPでは自己申告のまま記録する):
-  - 対戦中・結果画面(features/battle.md, features/battle-history.md): `reporterLabel`=自分の`displayName`(`joined`メッセージで受け取った値)、`targetLabel`=相手の`displayName`(`battle_start.peers`から取得。`joined.peers`は自分1件しか含まれない場合があるため使わない)
-  - 観戦中(features/spectate.md): `reporterLabel`=チケット取得済みなら自分の`displayName`、匿名観戦なら固定値`"観戦者"`。`targetLabel`=通報対象を選択させるUIが無いため、`battle_start`/`joined`で得た対戦者いずれかの`displayName`(実装時にUIで選択させる)
+  - 対戦中・結果画面(features/battle.md, features/battle-history.md): `reporterLabel`=自分の`displayName`(`joined`メッセージで受け取った値)、`targetLabel`=相手の`displayName`(**`battle_start.peers`、再接続後は`resume.peers`から取得**。`joined.peers`は自分1件しか含まれない場合があるため使わない)
+  - 観戦中(features/spectate.md): `reporterLabel`=**常に固定値`"観戦者"`**(観戦接続はチケットを使わず表示名を持たないため)。`targetLabel`=通報対象を選択させるUIが無いため、`battle_start`/`joined`で得た対戦者いずれかの`displayName`(実装時にUIで選択させる)
 - レスポンス(201): `{ "id": string, "createdAt": string }`
 - エラー: `reason`/`reporterLabel`/`targetLabel`欠落 → 400 `REASON_REQUIRED`/`REPORTER_LABEL_REQUIRED`/`TARGET_LABEL_REQUIRED`。`reporterLabel`/`targetLabel`が21文字以上 → 400 `LABEL_TOO_LONG`。`detail`が500文字超 → 400 `DETAIL_TOO_LONG`
 - `reporterLabel`/`targetLabel`は**1〜20文字**(`nicknameFilter`と同じ文字数範囲。表示名の出所がニックネームまたは固定値「観戦者」であるため)

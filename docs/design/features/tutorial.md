@@ -33,7 +33,7 @@ UI_SKETCH.html「Tutorial」画面に対応。
 | --- | --- | --- |
 | チュートリアル画面本体 | front | `src/front/pages/Tutorial.tsx` |
 | 既読フラグの読み書き(localStorage、キー`vstetris.tutorialSeen`) | front | `src/front/lib/tutorialSeen.ts` |
-| ゲスト名の読み書き(sessionStorage、キー`vstetris.guestName`。書き込みはHome側、チュートリアルは読み取りのみ) | front | `src/front/lib/guestName.ts`(`src/front/pages/Home.tsx`と共用) |
+| ゲスト名の読み取り(sessionStorage、キー`vstetris.guestName`) | front | `src/front/lib/guestName.ts`(**正本はfeatures/guest-session.mdの「実装の配置」**。チュートリアルは読み取りのみ) |
 
 ## エッジケースの決定
 
